@@ -8,6 +8,7 @@ description = "FlightDeck deck cipher and Deck-BO authenticated encryption (Turb
 license = "MIT"
 repository = "https://github.com/jedisct1/rust-flightdeck"
 documentation = "https://docs.rs/flightdeck"
+readme = "README.md"
 keywords = ["flightdeck", "aead", "turboshake", "keccak", "wasm"]
 categories = ["cryptography", "no-std", "no-std::no-alloc", "wasm"]
 include = ["/src/**/*.rs", "/README.md", "/LICENSE"]
