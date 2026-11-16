@@ -42,6 +42,7 @@
 //!
 //! Several blocks are processed at once with vector instructions:
 //!
+//! - x86-64: SSE2.
 //! - AArch64: NEON.
 //! - WebAssembly: only when built with `-C target-feature=+simd128`.
 //!
@@ -52,6 +53,7 @@
 // The vector code is not used on targets without vectors.
 #![cfg_attr(
     not(any(
+        all(target_arch = "x86_64", target_feature = "sse2"),
         all(
             target_arch = "aarch64",
             target_endian = "little",

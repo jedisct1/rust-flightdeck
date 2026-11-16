@@ -7,6 +7,10 @@
 
 // Targets with vector instructions turned off, as kernels do, get the last case.
 cfg_select! {
+    all(target_arch = "x86_64", target_feature = "sse2") => {
+        mod x86_64;
+        pub(crate) use x86_64::{parallelism, run};
+    }
     all(target_arch = "aarch64", target_endian = "little", target_feature = "neon") => {
         mod aarch64;
         pub(crate) use aarch64::{parallelism, run};
