@@ -3,6 +3,7 @@ use std::vec;
 use std::vec::Vec;
 
 use crate::keccak;
+use crate::variant::test_variants::{Chunks327, OddChunks, OneBlockChunks};
 use crate::*;
 
 /// The inputs of the test vectors.
@@ -137,4 +138,227 @@ fn misuse_panics() {
     let empty = DuplexTrailer::EMPTY;
     assert!(panic_message(move || new().duplex(&[0; 129], empty, &mut [])).contains(too_long));
     assert!(panic_message(move || new().duplex(b"", empty, &mut [0; 129])).contains(too_long));
+
+    let deck = || TurboShake128FlightDeck::new(b"key").unwrap();
+    assert!(panic_message(move || deck().squeeze(&mut [0])).contains("before squeezing"));
+    assert!(panic_message(move || deck().xor(&mut [0])).contains("before squeezing"));
+}
+
+#[test]
+fn keys_and_trailers() {
+    assert_eq!(
+        [
+            TurboShake128FlightDeck::KEY_LEN,
+            Shake256FlightDeck::KEY_LEN
+        ],
+        [16, 32]
+    );
+    assert!(TurboShake128FlightDeck::new(&[0; 160]).is_ok());
+    assert_eq!(
+        TurboShake128FlightDeck::new(&[0; 161]).unwrap_err(),
+        InvalidKeyLength
+    );
+    assert!(TurboShake256FlightDeck::new(&[0; 128]).is_ok());
+    assert!(TurboShake256FlightDeck::new(&[0; 129]).is_err());
+
+    assert_eq!(Trailer::default(), Trailer::EMPTY);
+    assert_eq!(Trailer::new(0), None);
+    assert_eq!(Trailer::new(1), Some(Trailer::EMPTY));
+    assert_eq!(Trailer::new(31).unwrap().get(), 31);
+    assert_eq!(Trailer::new(32), None);
+    assert_eq!(DuplexTrailer::new(63).unwrap().get(), 63);
+    assert_eq!(DuplexTrailer::new(64), None);
+    assert_eq!(Trailer::from_bits(&[]), Some(Trailer::EMPTY));
+    assert_eq!(
+        Trailer::from_bits(&[true, false, false, false]),
+        Trailer::new(0b10001)
+    );
+    assert_eq!(Trailer::from_bits(&[false; 5]), None);
+}
+
+fn deck_test_vectors<V: Variant>(expected: [&str; 4]) {
+    let key: [u8; 16] = array::from_fn(|i| i as u8);
+    let alpha = V::CHUNK_LEN;
+
+    let mut deck = FlightDeck::<V>::new(&key).unwrap();
+    // Four calls in a row. The last 32 bytes of each output are checked.
+    let calls = [
+        (0, 1, 32),
+        (alpha + 1, 7, 32),
+        (11 * alpha + alpha / 2 + 17, 31, 32),
+        (1, 2, 50000),
+    ];
+    for (i, ((in_len, trailer, out_len), end)) in calls.into_iter().zip(expected).enumerate() {
+        let mut out = vec![0; out_len];
+        deck.duplex(
+            &pattern(in_len, 1, 17 * i),
+            Trailer::new(trailer).unwrap(),
+            &mut out,
+        );
+        assert_eq!(out[out_len - 32..], hex(end), "call {i}");
+    }
+}
+
+// Generated with XKCP, commit d20c8fc.
+#[test]
+fn deck_against_xkcp() {
+    deck_test_vectors::<Shake128>([
+        "46522d87bb182c09cb3894f631f0d2038ae9c519ee8a83d9889e9444d9cac055",
+        "b8fdbf7c9ce6de5926f483d3727270e8da3e7c4cbe705d11b2aa04a227f531f0",
+        "0e2866d9275fa42f13afa406b83dbf5217d3885a53eed1ec27f0fffc8cc38eea",
+        "e30f7c5b3cb6c97665159f35d59238a3c1ae808ff381afb2edc77e6a10dc3bd7",
+    ]);
+    deck_test_vectors::<Shake256>([
+        "48a3a3e770baa4b4ad1c8433a686033a66274d4b7557e58fefd889c65f6f13d5",
+        "a240322bf03fa890d4b9804b574988bd1e224bd2b02e277068fa82ddcbb0ed67",
+        "80646d3d6e1af65b3b3aefcc52af92c1ce607b429964d935da5149fe90f46bd6",
+        "0de4155a80187d7967547300fe5033e2d2811fde27cfeaf0932e0076000f8b8d",
+    ]);
+    deck_test_vectors::<TurboShake128>([
+        "7647c9011410b46aed34896b978d4cf7c6de2a2b02dde9cac3db2d9f0d2d4cd1",
+        "42bf0b8604f465b3ed708904287b72af6d38a4b313ff7a43f2d6ebbf08a9ce56",
+        "df4abd09ab62f58d3d417cd060c7b1125f12985ad7ff319042633e9685c89f59",
+        "ad2ea7d74ee3216ceb8c1e7349aa7affe0a257219bbb8bee2aecc472eace57a1",
+    ]);
+    deck_test_vectors::<TurboShake256>([
+        "3f28f4f4ed9df27113e56956de92c68fe0ca4d00c3ebc6201bb6e43079851b52",
+        "eda592a2605bfc55d541b14849443c794a13c9d117b7d7da60942374ec8b0cb8",
+        "7f5c22615c068bb10c36a2da08b85a07d64a1a2702fb0d1dd98548afba694d5b",
+        "8661fa82d4652cfad8e26b7b5b2ecb464035b703b774f35b8bb1b3ba17d4833a",
+    ]);
+    // Chunks that don't end on a block boundary.
+    deck_test_vectors::<Chunks327>([
+        "7647c9011410b46aed34896b978d4cf7c6de2a2b02dde9cac3db2d9f0d2d4cd1",
+        "38c74e9d5b7dffaaa5efb0509c559395cf6538994c61afd879c755d47b72ad2c",
+        "81f25d44a7e6815d1fa656f37b3847ba687f5af3239a723e785e0c17635aa1df",
+        "112e6271871e86acd00f79bde74e30701f6efcdd2b8f11bca27a102d071d50fb",
+    ]);
+}
+
+/// FlightDeck as written in Algorithm 3 of the paper.
+struct ReferenceFlightDeck<V: Variant> {
+    d: OverwriteDuplex<V>,
+    d_squeeze: OverwriteDuplex<V>,
+    o: usize,
+}
+
+impl<V: Variant> ReferenceFlightDeck<V> {
+    fn new(key: &[u8]) -> Self {
+        let d = OverwriteDuplex::new(key).unwrap();
+        Self {
+            d_squeeze: d.clone(),
+            d,
+            o: 0,
+        }
+    }
+
+    fn duplexing(&mut self, x: &[u8], e: Trailer, z: &mut [u8]) {
+        let rho = V::BLOCK_LEN;
+        let empty = DuplexTrailer::EMPTY;
+        let mut chunks = x.chunks(V::CHUNK_LEN);
+
+        let mut r = chunks.next().unwrap_or_default().to_vec();
+        for mut y in chunks {
+            let mut d_prime = self.d.clone_compact();
+            while y.len() > rho {
+                d_prime.duplex(&y[..rho], empty, &mut []);
+                y = &y[rho..];
+            }
+            let mut cv = vec![0; V::CV_LEN];
+            d_prime.duplex(y, DuplexTrailer::new(4).unwrap(), &mut cv);
+            r.extend(cv);
+        }
+        let mut left = &r[..];
+        while left.len() > rho {
+            self.d.duplex(&left[..rho], empty, &mut []);
+            left = &left[rho..];
+        }
+        // E||1
+        let e = e.get();
+        self.d.duplex(
+            left,
+            DuplexTrailer::new(e + (2 << e.ilog2())).unwrap(),
+            &mut [],
+        );
+        self.o = 0;
+        self.squeezing(z);
+    }
+
+    fn squeezing(&mut self, z: &mut [u8]) {
+        let rho = V::BLOCK_LEN;
+        let mut done = 0;
+        if self.o <= rho {
+            done = z.len().min(rho - self.o);
+            self.d.squeeze(&mut z[..done]);
+            self.o += done;
+        }
+        while done < z.len() {
+            if self.o.is_multiple_of(rho) {
+                let mut counter = vec![0; rho];
+                counter[..8].copy_from_slice(&((self.o / rho) as u64).to_le_bytes());
+                self.d_squeeze = self.d.clone_compact();
+                self.d_squeeze
+                    .duplex(&counter, DuplexTrailer::new(2).unwrap(), &mut []);
+            }
+            let n = (rho - self.o % rho).min(z.len() - done);
+            self.d_squeeze.squeeze(&mut z[done..][..n]);
+            self.o += n;
+            done += n;
+        }
+    }
+}
+
+/// SplitMix64, to pick lengths and trailers.
+struct Random(u64);
+
+impl Random {
+    fn up_to(&mut self, max: usize) -> usize {
+        self.0 = self.0.wrapping_add(0x9e3779b97f4a7c15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        z ^= z >> 31;
+        (z % (max as u64 + 1)) as usize
+    }
+}
+
+fn deck_against_reference<V: Variant>() {
+    let alpha = V::CHUNK_LEN;
+    let rho = V::BLOCK_LEN;
+
+    let mut reference = ReferenceFlightDeck::<V>::new(b"key");
+    let mut deck = FlightDeck::<V>::new(b"key").unwrap();
+    let input = pattern(18 * alpha + rho + 1, 5, 1);
+    let mut expected = vec![0; 20 * rho];
+    let mut out = vec![0; expected.len()];
+    let mut random = Random(alpha as u64);
+
+    // Lengths around every multiple of half a chunk: that's where the batching changes.
+    for half_chunks in 0..37 {
+        for extra in [0, 1, 2, rho + 1, rho + 2] {
+            let x = &input[..(half_chunks * alpha / 2 + extra).saturating_sub(1)];
+            let trailer = Trailer::new(1 + random.up_to(30) as u8).unwrap();
+            let len = random.up_to(out.len());
+            let second = random.up_to(len);
+            let first = random.up_to(second);
+
+            let expected = &mut expected[..len];
+            reference.duplexing(x, trailer, expected);
+            // The same output in three pieces: two written over garbage, one XORed into zeros.
+            let z = &mut out[..len];
+            z[..second].fill(0xa5);
+            z[second..].fill(0);
+            deck.duplex(x, trailer, &mut z[..first]);
+            deck.squeeze(&mut z[first..second]);
+            deck.xor(&mut z[second..]);
+            assert_eq!(z, expected, "{} bytes in, {len} bytes out", x.len());
+        }
+    }
+}
+
+#[test]
+fn deck_against_the_reference_algorithm() {
+    deck_against_reference::<TurboShake128>();
+    deck_against_reference::<OddChunks>();
+    deck_against_reference::<OneBlockChunks>();
 }

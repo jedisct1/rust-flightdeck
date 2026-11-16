@@ -1,9 +1,13 @@
 //! FlightDeck, a fast keyed cipher built on Keccak.
 //!
-//! Only its first layer is here for now: [`OverwriteDuplex`], a duplex cipher.
-//! It absorbs a block, and gives back up to a block of output.
+//! There are two layers:
 //!
-//! It comes in four instances.
+//! - [`OverwriteDuplex`] is a duplex cipher.
+//!   It absorbs a block, and gives back up to a block of output.
+//! - [`FlightDeck`] is a deck cipher, built on the duplex cipher.
+//!   Same thing, with inputs and outputs of any length.
+//!
+//! Each layer comes in four instances.
 //! [`TurboShake128`] and [`TurboShake256`] are the fast ones.
 //! [`Shake128`] and [`Shake256`] use twice as many rounds.
 
@@ -13,6 +17,7 @@
 #[cfg(test)]
 extern crate std;
 
+mod deck;
 mod duplex;
 mod keccak;
 #[cfg(test)]
@@ -22,8 +27,9 @@ mod variant;
 
 use core::fmt;
 
+pub use deck::FlightDeck;
 pub use duplex::OverwriteDuplex;
-pub use trailer::DuplexTrailer;
+pub use trailer::{DuplexTrailer, Trailer};
 pub use variant::{Shake128, Shake256, TurboShake128, TurboShake256, Variant};
 
 /// Duplex cipher based on TurboSHAKE128, with blocks of 160 bytes.
@@ -34,6 +40,15 @@ pub type TurboShake256Duplex = OverwriteDuplex<TurboShake256>;
 pub type Shake128Duplex = OverwriteDuplex<Shake128>;
 /// Duplex cipher based on SHAKE256, with blocks of 128 bytes.
 pub type Shake256Duplex = OverwriteDuplex<Shake256>;
+
+/// Deck cipher based on TurboSHAKE128.
+pub type TurboShake128FlightDeck = FlightDeck<TurboShake128>;
+/// Deck cipher based on TurboSHAKE256.
+pub type TurboShake256FlightDeck = FlightDeck<TurboShake256>;
+/// Deck cipher based on SHAKE128.
+pub type Shake128FlightDeck = FlightDeck<Shake128>;
+/// Deck cipher based on SHAKE256.
+pub type Shake256FlightDeck = FlightDeck<Shake256>;
 
 /// The key is too long.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

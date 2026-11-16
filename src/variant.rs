@@ -94,3 +94,47 @@ variant!(
     0x9f,
     8192
 );
+
+#[cfg(test)]
+pub(crate) mod test_variants {
+    use super::{Variant, sealed};
+
+    /// Chunks that don't end on a block boundary, chaining values that don't end on a lane boundary.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct OddChunks;
+    impl sealed::Sealed for OddChunks {}
+    impl Variant for OddChunks {
+        const KEY_LEN: usize = 16;
+        const ROUNDS: usize = 12;
+        const PADDING: u8 = 0x80;
+        const BLOCK_LEN: usize = 160;
+        const CHUNK_LEN: usize = 327;
+        const CV_LEN: usize = 67;
+    }
+
+    /// The parameters of a test vector made with XKCP.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Chunks327;
+    impl sealed::Sealed for Chunks327 {}
+    impl Variant for Chunks327 {
+        const KEY_LEN: usize = 16;
+        const ROUNDS: usize = 12;
+        const PADDING: u8 = 0x80;
+        const BLOCK_LEN: usize = 160;
+        const CHUNK_LEN: usize = 327;
+        const CV_LEN: usize = 32;
+    }
+
+    /// One block per chunk, chaining values as long as a block.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct OneBlockChunks;
+    impl sealed::Sealed for OneBlockChunks {}
+    impl Variant for OneBlockChunks {
+        const KEY_LEN: usize = 32;
+        const ROUNDS: usize = 12;
+        const PADDING: u8 = 0x80;
+        const BLOCK_LEN: usize = 128;
+        const CHUNK_LEN: usize = 128;
+        const CV_LEN: usize = 128;
+    }
+}

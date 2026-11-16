@@ -68,9 +68,27 @@ macro_rules! trailer {
 }
 
 trailer!(
+    /// Up to four bits that go with the input of a [`FlightDeck`](crate::FlightDeck) call.
+    ///
+    /// Calls with different trailers give unrelated outputs, even on the same input.
+    /// Use them to tell apart the kinds of calls a protocol makes.
+    /// With only one kind, use [`Trailer::EMPTY`].
+    Trailer,
+    4
+);
+
+trailer!(
     /// Up to five bits that go with a block of an [`OverwriteDuplex`](crate::OverwriteDuplex).
     ///
-    /// Blocks with different trailers give unrelated outputs, even when they hold the same bytes.
+    /// Like [`Trailer`], with room for one more bit.
     DuplexTrailer,
     5
 );
+
+impl Trailer {
+    /// What the duplex under a deck cipher gets: this trailer and one more bit.
+    #[inline(always)]
+    pub(crate) const fn with_bit(self, bit: bool) -> DuplexTrailer {
+        DuplexTrailer(append_bit(self.0, bit))
+    }
+}

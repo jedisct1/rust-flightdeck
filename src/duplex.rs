@@ -13,6 +13,9 @@ use crate::variant::Variant;
 /// It takes a block of up to [`BLOCK_LEN`](Self::BLOCK_LEN) bytes, and gives back up to `BLOCK_LEN` bytes.
 /// These bytes depend on the key and on every block so far.
 ///
+/// You most likely want [`FlightDeck`](crate::FlightDeck) instead:
+/// it takes inputs and gives outputs of any length, and it's faster on long ones.
+///
 /// ```
 /// use flightdeck::{DuplexTrailer, TurboShake128Duplex};
 ///
@@ -122,6 +125,23 @@ impl<V: Variant> OverwriteDuplex<V> {
             offset: V::BLOCK_LEN,
             variant: PhantomData,
         }
+    }
+
+    /// Become a compact clone of `other` that has absorbed `counter` as a block.
+    ///
+    /// Same as `clone_compact()` then `duplex()`, without copying the state around.
+    pub(crate) fn clone_with_counter_from(
+        &mut self,
+        other: &Self,
+        counter: u64,
+        trailer: DuplexTrailer,
+    ) {
+        self.st[0] = counter;
+        self.st[1..V::BLOCK_LANES].fill(0);
+        self.st[V::BLOCK_LANES..].copy_from_slice(&other.st[V::BLOCK_LANES..]);
+        self.st[V::BLOCK_LANES] ^= trailer_lane::<V>(trailer, true);
+        keccak::permute(&mut self.st, V::ROUNDS);
+        self.offset = 0;
     }
 
     fn output<const XOR: bool>(&mut self, data: &mut [u8]) {
