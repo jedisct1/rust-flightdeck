@@ -42,6 +42,7 @@
 //!
 //! Several blocks are processed at once with vector instructions:
 //!
+//! - AArch64: NEON.
 //! - WebAssembly: only when built with `-C target-feature=+simd128`.
 //!
 //! Targets built without vector instructions, as kernels often are, process one block at a time.
@@ -50,7 +51,14 @@
 #![warn(missing_docs)]
 // The vector code is not used on targets without vectors.
 #![cfg_attr(
-    not(all(target_arch = "wasm32", target_feature = "simd128")),
+    not(any(
+        all(
+            target_arch = "aarch64",
+            target_endian = "little",
+            target_feature = "neon"
+        ),
+        all(target_arch = "wasm32", target_feature = "simd128")
+    )),
     allow(dead_code)
 )]
 
