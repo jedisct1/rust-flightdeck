@@ -42,7 +42,7 @@
 //!
 //! Several blocks are processed at once with vector instructions:
 //!
-//! - x86-64: SSE2.
+//! - x86-64: SSE2, AVX2 or AVX-512, picked when the program runs.
 //! - AArch64: NEON.
 //! - WebAssembly: only when built with `-C target-feature=+simd128`.
 //!

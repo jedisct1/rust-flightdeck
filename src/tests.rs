@@ -9,6 +9,7 @@ use crate::*;
 
 std::thread_local! {
     static MAX_PARALLELISM: Cell<usize> = const { Cell::new(usize::MAX) };
+    static MAX_TIER: Cell<usize> = const { Cell::new(usize::MAX) };
 }
 
 /// The most states the current test wants processed at once.
@@ -16,10 +17,18 @@ pub(crate) fn max_parallelism() -> usize {
     MAX_PARALLELISM.get()
 }
 
-/// Every batch size. The ones the target can't do fall back to the best it can.
-const SETUPS: [usize; 4] = [1, 2, 4, 8];
+/// The best instruction set the current test wants used, on x86-64: 0 for SSE2, 1 for AVX2, 2 for AVX-512.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+pub(crate) fn max_tier() -> usize {
+    MAX_TIER.get()
+}
 
-fn set_up(width: usize) {
+/// Every instruction set with every batch size, as (tier, states).
+/// What the CPU doesn't have falls back to the best it has, and 8 states means as many as the tier can do.
+const SETUPS: [(usize, usize); 7] = [(0, 1), (0, 8), (1, 2), (1, 8), (2, 2), (2, 4), (2, 8)];
+
+fn set_up((tier, width): (usize, usize)) {
+    MAX_TIER.set(tier);
     MAX_PARALLELISM.set(width);
 }
 
