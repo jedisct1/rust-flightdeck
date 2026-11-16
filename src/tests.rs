@@ -1,10 +1,27 @@
 use core::array;
+use core::cell::Cell;
 use std::vec;
 use std::vec::Vec;
 
 use crate::keccak;
 use crate::variant::test_variants::{Chunks327, OddChunks, OneBlockChunks};
 use crate::*;
+
+std::thread_local! {
+    static MAX_PARALLELISM: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+/// The most states the current test wants processed at once.
+pub(crate) fn max_parallelism() -> usize {
+    MAX_PARALLELISM.get()
+}
+
+/// Every batch size. The ones the target can't do fall back to the best it can.
+const SETUPS: [usize; 4] = [1, 2, 4, 8];
+
+fn set_up(width: usize) {
+    MAX_PARALLELISM.set(width);
+}
 
 /// The inputs of the test vectors.
 fn pattern(len: usize, multiplier: usize, offset: usize) -> Vec<u8> {
@@ -177,22 +194,25 @@ fn deck_test_vectors<V: Variant>(expected: [&str; 4]) {
     let key: [u8; 16] = array::from_fn(|i| i as u8);
     let alpha = V::CHUNK_LEN;
 
-    let mut deck = FlightDeck::<V>::new(&key).unwrap();
-    // Four calls in a row. The last 32 bytes of each output are checked.
-    let calls = [
-        (0, 1, 32),
-        (alpha + 1, 7, 32),
-        (11 * alpha + alpha / 2 + 17, 31, 32),
-        (1, 2, 50000),
-    ];
-    for (i, ((in_len, trailer, out_len), end)) in calls.into_iter().zip(expected).enumerate() {
-        let mut out = vec![0; out_len];
-        deck.duplex(
-            &pattern(in_len, 1, 17 * i),
-            Trailer::new(trailer).unwrap(),
-            &mut out,
-        );
-        assert_eq!(out[out_len - 32..], hex(end), "call {i}");
+    for setup in SETUPS {
+        set_up(setup);
+        let mut deck = FlightDeck::<V>::new(&key).unwrap();
+        // Four calls in a row. The last 32 bytes of each output are checked.
+        let calls = [
+            (0, 1, 32),
+            (alpha + 1, 7, 32),
+            (11 * alpha + alpha / 2 + 17, 31, 32),
+            (1, 2, 50000),
+        ];
+        for (i, ((in_len, trailer, out_len), end)) in calls.into_iter().zip(expected).enumerate() {
+            let mut out = vec![0; out_len];
+            deck.duplex(
+                &pattern(in_len, 1, 17 * i),
+                Trailer::new(trailer).unwrap(),
+                &mut out,
+            );
+            assert_eq!(out[out_len - 32..], hex(end), "call {i}, setup {setup:?}");
+        }
     }
 }
 
@@ -324,7 +344,7 @@ fn deck_against_reference<V: Variant>() {
     let rho = V::BLOCK_LEN;
 
     let mut reference = ReferenceFlightDeck::<V>::new(b"key");
-    let mut deck = FlightDeck::<V>::new(b"key").unwrap();
+    let mut decks = SETUPS.map(|_| FlightDeck::<V>::new(b"key").unwrap());
     let input = pattern(18 * alpha + rho + 1, 5, 1);
     let mut expected = vec![0; 20 * rho];
     let mut out = vec![0; expected.len()];
@@ -341,14 +361,22 @@ fn deck_against_reference<V: Variant>() {
 
             let expected = &mut expected[..len];
             reference.duplexing(x, trailer, expected);
-            // The same output in three pieces: two written over garbage, one XORed into zeros.
-            let z = &mut out[..len];
-            z[..second].fill(0xa5);
-            z[second..].fill(0);
-            deck.duplex(x, trailer, &mut z[..first]);
-            deck.squeeze(&mut z[first..second]);
-            deck.xor(&mut z[second..]);
-            assert_eq!(z, expected, "{} bytes in, {len} bytes out", x.len());
+            for (deck, setup) in decks.iter_mut().zip(SETUPS) {
+                set_up(setup);
+                // The same output in three pieces: two written over garbage, one XORed into zeros.
+                let z = &mut out[..len];
+                z[..second].fill(0xa5);
+                z[second..].fill(0);
+                deck.duplex(x, trailer, &mut z[..first]);
+                deck.squeeze(&mut z[first..second]);
+                deck.xor(&mut z[second..]);
+                assert_eq!(
+                    z,
+                    expected,
+                    "{} bytes in, {len} bytes out, setup {setup:?}",
+                    x.len()
+                );
+            }
         }
     }
 }
@@ -371,37 +399,41 @@ struct BoVectors {
 fn bo_test_vectors<V: Variant>(expected: BoVectors) {
     let key: [u8; 32] = array::from_fn(|i| i as u8);
 
-    // Four messages, with and without associated data and plaintext.
-    let mut sender = DeckBo::<V, 16>::new(&key[..16]).unwrap();
-    let mut receiver = sender.clone();
-    for (i, ((ad_len, m_len), c_and_tag)) in [(0, 0), (5, 0), (0, 5), (7, 40)]
-        .into_iter()
-        .zip(expected.session)
-        .enumerate()
-    {
-        let ad = pattern(ad_len, 1, 17 * i);
-        let m = pattern(m_len, 3, 29 * i);
+    for setup in SETUPS {
+        set_up(setup);
 
+        // Four messages, with and without associated data and plaintext.
+        let mut sender = DeckBo::<V, 16>::new(&key[..16]).unwrap();
+        let mut receiver = sender.clone();
+        for (i, ((ad_len, m_len), c_and_tag)) in [(0, 0), (5, 0), (0, 5), (7, 40)]
+            .into_iter()
+            .zip(expected.session)
+            .enumerate()
+        {
+            let ad = pattern(ad_len, 1, 17 * i);
+            let m = pattern(m_len, 3, 29 * i);
+
+            let mut buffer = m.clone();
+            let tag = sender.encrypt_in_place(&ad, &mut buffer);
+            assert_eq!([&buffer[..], &tag[..]].concat(), hex(c_and_tag));
+
+            receiver.decrypt_in_place(&ad, &mut buffer, &tag).unwrap();
+            assert_eq!(buffer, m);
+        }
+
+        // Many chunks of associated data and of plaintext.
+        let ad = pattern(20000, 1, 0);
+        let m = pattern(80000, 3, 0);
+        let mut sender = DeckBo::<V, 32>::new(&key).unwrap();
+        let mut receiver = sender.clone();
         let mut buffer = m.clone();
         let tag = sender.encrypt_in_place(&ad, &mut buffer);
-        assert_eq!([&buffer[..], &tag[..]].concat(), hex(c_and_tag));
+        assert_eq!(buffer[buffer.len() - 32..], hex(expected.long_ciphertext));
+        assert_eq!(tag[..], hex(expected.long_tag));
 
         receiver.decrypt_in_place(&ad, &mut buffer, &tag).unwrap();
         assert_eq!(buffer, m);
     }
-
-    // Many chunks of associated data and of plaintext.
-    let ad = pattern(20000, 1, 0);
-    let m = pattern(80000, 3, 0);
-    let mut sender = DeckBo::<V, 32>::new(&key).unwrap();
-    let mut receiver = sender.clone();
-    let mut buffer = m.clone();
-    let tag = sender.encrypt_in_place(&ad, &mut buffer);
-    assert_eq!(buffer[buffer.len() - 32..], hex(expected.long_ciphertext));
-    assert_eq!(tag[..], hex(expected.long_tag));
-
-    receiver.decrypt_in_place(&ad, &mut buffer, &tag).unwrap();
-    assert_eq!(buffer, m);
 }
 
 // Generated with XKCP, commit d20c8fc.

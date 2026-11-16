@@ -5,7 +5,7 @@
 //! - [`OverwriteDuplex`] is a duplex cipher.
 //!   It absorbs a block, and gives back up to a block of output.
 //! - [`FlightDeck`] is a deck cipher.
-//!   Same thing, with inputs and outputs of any length.
+//!   Same thing, with inputs and outputs of any length. Long ones are processed several blocks at a time.
 //! - [`DeckBo`] is authenticated encryption for a session of messages.
 //!   That's the one to use to protect data.
 //!
@@ -37,19 +37,34 @@
 //! - `std` is on by default. For now, all it does is turn `alloc` on.
 //!
 //! Without them, the crate is `no_std` and doesn't allocate.
+//!
+//! # Performance
+//!
+//! Several blocks are processed at once with vector instructions:
+//!
+//! - WebAssembly: only when built with `-C target-feature=+simd128`.
+//!
+//! Targets built without vector instructions, as kernels often are, process one block at a time.
 
 #![no_std]
 #![warn(missing_docs)]
+// The vector code is not used on targets without vectors.
+#![cfg_attr(
+    not(all(target_arch = "wasm32", target_feature = "simd128")),
+    allow(dead_code)
+)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(any(feature = "std", test))]
 extern crate std;
 
+mod batch;
 mod bo;
 mod deck;
 mod duplex;
 mod keccak;
+mod simd;
 #[cfg(test)]
 mod tests;
 mod trailer;
