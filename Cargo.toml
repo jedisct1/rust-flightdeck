@@ -1,0 +1,17 @@
+[package]
+name = "flightdeck"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+authors = ["Frank Denis <github@pureftpd.org>"]
+description = "FlightDeck deck cipher and Deck-BO authenticated encryption (TurboSHAKE-BO, SHAKE-BO), with SIMD on x86-64, AArch64 and WebAssembly"
+license = "MIT"
+repository = "https://github.com/jedisct1/rust-flightdeck"
+documentation = "https://docs.rs/flightdeck"
+keywords = ["flightdeck", "aead", "turboshake", "keccak", "wasm"]
+categories = ["cryptography", "no-std", "no-std::no-alloc", "wasm"]
+include = ["/src/**/*.rs", "/README.md", "/LICENSE"]
+
+# The tests go through a lot of data: optimized, they run in under a second. Checks stay on.
+[profile.test]
+opt-level = 2

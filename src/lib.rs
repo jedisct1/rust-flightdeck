@@ -1,0 +1,48 @@
+//! FlightDeck, a fast keyed cipher built on Keccak.
+//!
+//! Only its first layer is here for now: [`OverwriteDuplex`], a duplex cipher.
+//! It absorbs a block, and gives back up to a block of output.
+//!
+//! It comes in four instances.
+//! [`TurboShake128`] and [`TurboShake256`] are the fast ones.
+//! [`Shake128`] and [`Shake256`] use twice as many rounds.
+
+#![no_std]
+#![warn(missing_docs)]
+
+#[cfg(test)]
+extern crate std;
+
+mod duplex;
+mod keccak;
+#[cfg(test)]
+mod tests;
+mod trailer;
+mod variant;
+
+use core::fmt;
+
+pub use duplex::OverwriteDuplex;
+pub use trailer::DuplexTrailer;
+pub use variant::{Shake128, Shake256, TurboShake128, TurboShake256, Variant};
+
+/// Duplex cipher based on TurboSHAKE128, with blocks of 160 bytes.
+pub type TurboShake128Duplex = OverwriteDuplex<TurboShake128>;
+/// Duplex cipher based on TurboSHAKE256, with blocks of 128 bytes.
+pub type TurboShake256Duplex = OverwriteDuplex<TurboShake256>;
+/// Duplex cipher based on SHAKE128, with blocks of 160 bytes.
+pub type Shake128Duplex = OverwriteDuplex<Shake128>;
+/// Duplex cipher based on SHAKE256, with blocks of 128 bytes.
+pub type Shake256Duplex = OverwriteDuplex<Shake256>;
+
+/// The key is too long.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct InvalidKeyLength;
+
+impl fmt::Display for InvalidKeyLength {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the key is too long")
+    }
+}
+
+impl core::error::Error for InvalidKeyLength {}
