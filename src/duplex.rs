@@ -6,6 +6,7 @@ use core::marker::PhantomData;
 use crate::InvalidKeyLength;
 use crate::batch::MAX_PARALLELISM;
 use crate::keccak::{self, Lanes};
+use crate::simd;
 use crate::trailer::{DuplexTrailer, append_bit};
 use crate::variant::{MAX_BLOCK_LEN, Variant};
 
@@ -97,7 +98,7 @@ impl<V: Variant> OverwriteDuplex<V> {
             self.st[lanes.len() + 1..V::BLOCK_LANES].fill(0);
         }
         self.st[V::BLOCK_LANES] ^= trailer_lane::<V>(trailer, full);
-        keccak::permute(&mut self.st, V::ROUNDS);
+        simd::permute(&mut self.st, V::ROUNDS);
         self.offset = 0;
     }
 
@@ -141,7 +142,7 @@ impl<V: Variant> OverwriteDuplex<V> {
         self.st[1..V::BLOCK_LANES].fill(0);
         self.st[V::BLOCK_LANES..].copy_from_slice(&other.st[V::BLOCK_LANES..]);
         self.st[V::BLOCK_LANES] ^= trailer_lane::<V>(trailer, true);
-        keccak::permute(&mut self.st, V::ROUNDS);
+        simd::permute(&mut self.st, V::ROUNDS);
         self.offset = 0;
     }
 

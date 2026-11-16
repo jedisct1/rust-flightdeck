@@ -17,10 +17,12 @@ use core::arch::x86_64::{
 };
 
 use crate::batch::Job;
-use crate::keccak::Lanes;
+use crate::keccak::{self, Lanes};
+use crate::simd::portable;
 
 cpufeatures::new!(avx2, "avx2");
 cpufeatures::new!(avx512, "avx512f", "avx512vl");
+cpufeatures::new!(bmi2, "bmi1", "bmi2");
 
 /// The best vector instructions the CPU has.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -283,5 +285,24 @@ pub(crate) fn run<J: Job>(n: usize, job: J) -> J::Out {
         (Tier::Avx2, 2) => unsafe { run_avx2::<J, Sse2, 2>(job) },
         (Tier::Sse2, 2) => job.run::<Sse2, 2>(),
         _ => unreachable!("{n} states at once, on a CPU that can't do it"),
+    }
+}
+
+/// The permutation of one state, with BMI.
+/// It has instructions for what Keccak does all the time: AND NOT, and rotate into another register.
+#[target_feature(enable = "bmi1,bmi2")]
+fn permute_bmi2(st: &mut [u64; 25], rounds: usize) {
+    keccak::permute(st, rounds);
+}
+
+pub(crate) fn permute(st: &mut [u64; 25], rounds: usize) {
+    let bmi2 = bmi2::get();
+    #[cfg(test)]
+    let bmi2 = bmi2 && crate::tests::max_tier() > 0;
+    if bmi2 {
+        // SAFETY: the CPU has BMI1 and BMI2.
+        unsafe { permute_bmi2(st, rounds) }
+    } else {
+        portable::permute(st, rounds);
     }
 }

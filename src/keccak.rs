@@ -108,8 +108,8 @@ fn round(st: &mut [u64; 25], round_constant: u64) {
 
 /// The last `rounds` rounds of Keccak-f[1600] on one state: 12 or 24.
 ///
-/// Not inlined, so that all the duplex ciphers share it.
-#[inline(never)]
+/// Call `simd::permute()` instead: this is inlined there, and built for what the CPU has.
+#[inline(always)]
 pub(crate) fn permute(st: &mut [u64; 25], rounds: usize) {
     debug_assert!(rounds == 12 || rounds == 24);
 
