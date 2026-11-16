@@ -20,6 +20,21 @@ alloc = []
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 cpufeatures = "0.3.1"
 
+[dev-dependencies]
+benchmark-simple = "0.2"
+
+[lib]
+bench = false
+
+[[bench]]
+name = "throughput"
+harness = false
+
 # The tests go through a lot of data: optimized, they run in under a second. Checks stay on.
 [profile.test]
 opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
