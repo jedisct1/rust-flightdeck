@@ -147,10 +147,7 @@ fn misuse_panics() {
 #[test]
 fn keys_and_trailers() {
     assert_eq!(
-        [
-            TurboShake128FlightDeck::KEY_LEN,
-            Shake256FlightDeck::KEY_LEN
-        ],
+        [TurboShake128FlightDeck::KEY_LEN, Shake256Bo::<16>::KEY_LEN],
         [16, 32]
     );
     assert!(TurboShake128FlightDeck::new(&[0; 160]).is_ok());
@@ -158,8 +155,8 @@ fn keys_and_trailers() {
         TurboShake128FlightDeck::new(&[0; 161]).unwrap_err(),
         InvalidKeyLength
     );
-    assert!(TurboShake256FlightDeck::new(&[0; 128]).is_ok());
-    assert!(TurboShake256FlightDeck::new(&[0; 129]).is_err());
+    assert!(TurboShake256Bo::<16>::new(&[0; 128]).is_ok());
+    assert!(TurboShake256Bo::<16>::new(&[0; 129]).is_err());
 
     assert_eq!(Trailer::default(), Trailer::EMPTY);
     assert_eq!(Trailer::new(0), None);
@@ -361,4 +358,141 @@ fn deck_against_the_reference_algorithm() {
     deck_against_reference::<TurboShake128>();
     deck_against_reference::<OddChunks>();
     deck_against_reference::<OneBlockChunks>();
+}
+
+struct BoVectors {
+    /// Ciphertext and tag of each message of a session.
+    session: [&'static str; 4],
+    /// End of the ciphertext of a long message, and its tag.
+    long_ciphertext: &'static str,
+    long_tag: &'static str,
+}
+
+fn bo_test_vectors<V: Variant>(expected: BoVectors) {
+    let key: [u8; 32] = array::from_fn(|i| i as u8);
+
+    // Four messages, with and without associated data and plaintext.
+    let mut sender = DeckBo::<V, 16>::new(&key[..16]).unwrap();
+    let mut receiver = sender.clone();
+    for (i, ((ad_len, m_len), c_and_tag)) in [(0, 0), (5, 0), (0, 5), (7, 40)]
+        .into_iter()
+        .zip(expected.session)
+        .enumerate()
+    {
+        let ad = pattern(ad_len, 1, 17 * i);
+        let m = pattern(m_len, 3, 29 * i);
+
+        let mut buffer = m.clone();
+        let tag = sender.encrypt_in_place(&ad, &mut buffer);
+        assert_eq!([&buffer[..], &tag[..]].concat(), hex(c_and_tag));
+
+        receiver.decrypt_in_place(&ad, &mut buffer, &tag).unwrap();
+        assert_eq!(buffer, m);
+    }
+
+    // Many chunks of associated data and of plaintext.
+    let ad = pattern(20000, 1, 0);
+    let m = pattern(80000, 3, 0);
+    let mut sender = DeckBo::<V, 32>::new(&key).unwrap();
+    let mut receiver = sender.clone();
+    let mut buffer = m.clone();
+    let tag = sender.encrypt_in_place(&ad, &mut buffer);
+    assert_eq!(buffer[buffer.len() - 32..], hex(expected.long_ciphertext));
+    assert_eq!(tag[..], hex(expected.long_tag));
+
+    receiver.decrypt_in_place(&ad, &mut buffer, &tag).unwrap();
+    assert_eq!(buffer, m);
+}
+
+// Generated with XKCP, commit d20c8fc.
+#[test]
+fn bo_against_xkcp() {
+    bo_test_vectors::<TurboShake128>(BoVectors {
+        session: [
+            "1c106e7483215251a6d39d1b7ced5081",
+            "a1ee10ab51029ad2520e746fa3616d10",
+            "c0e75ee6dbd1815bace517f6e80e78c4fe8de69c68",
+            "fd79fad9b021cf4e7d5e2f8a45a5fec28b5d267ff026b830e3636a05424870a0589dc31a036457f4b2ffa678aeb4742fcd8b280e257586cc",
+        ],
+        long_ciphertext: "448ad0859b25d898a569dbc54e9f10a7845a2085334be423dd62081236ef3477",
+        long_tag: "bfea226043c96f981d2a87ec6b595fd7517fca51190b24c87aaa4b4f46285baf",
+    });
+    bo_test_vectors::<TurboShake256>(BoVectors {
+        session: [
+            "50a6969d91e4a3cf6cbab92862e5331d",
+            "50ca4c773b1fae7dd184da8e1a57cb11",
+            "aaa5df8bcbfdc6e371c38b184644023fe70204d650",
+            "f045a1839d595957f5719040ee4ede0d6739e3661ff96bba0115410180fb8429c3b39f2085e9192d5b82af48bbc2ebc63f552116f9d440ff",
+        ],
+        long_ciphertext: "8f73baf8369dbd41a3b5d2d90952d136150794452602586aeb99e98c4af29c20",
+        long_tag: "e531fa17ca00de8db462ddfe079be91e2e55d0b06ea72932f7ecffe19255c3aa",
+    });
+}
+
+#[test]
+fn bo_authentication_failure() {
+    let m = b"a message";
+    let ad = b"associated data";
+
+    let mut sender = TurboShake128Bo::<16>::new(b"key").unwrap();
+    let mut receiver = sender.clone();
+    let mut c = *m;
+    let tag = sender.encrypt_in_place(ad, &mut c);
+
+    let mut bad_tag = tag;
+    bad_tag[0] ^= 1;
+    let mut buffer = c;
+    assert_eq!(
+        receiver.decrypt_in_place(ad, &mut buffer, &bad_tag),
+        Err(AuthenticationError)
+    );
+    assert_eq!(buffer, [0; 9]);
+    let mut buffer = c;
+    buffer[0] ^= 1;
+    assert!(receiver.decrypt_in_place(ad, &mut buffer, &tag).is_err());
+    let mut buffer = c;
+    assert!(
+        receiver
+            .decrypt_in_place(b"other data", &mut buffer, &tag)
+            .is_err()
+    );
+
+    // The session didn't move: the message is still accepted, but only once.
+    let mut buffer = c;
+    receiver.decrypt_in_place(ad, &mut buffer, &tag).unwrap();
+    assert_eq!(&buffer, m);
+    let mut buffer = c;
+    assert!(receiver.decrypt_in_place(ad, &mut buffer, &tag).is_err());
+
+    // Without a message, only the comparison looks at the tag, so check every byte of it.
+    let tag = sender.encrypt_in_place(ad, &mut []);
+    for i in 0..tag.len() {
+        for bit in [0x01, 0x80] {
+            let mut bad_tag = tag;
+            bad_tag[i] ^= bit;
+            assert!(receiver.decrypt_in_place(ad, &mut [], &bad_tag).is_err());
+        }
+    }
+    receiver.decrypt_in_place(ad, &mut [], &tag).unwrap();
+}
+
+#[cfg(feature = "alloc")]
+#[test]
+fn bo_returning_vecs() {
+    let mut sender = TurboShake256Bo::<32>::new(b"key").unwrap();
+    let mut receiver = sender.clone();
+
+    for m in [&b""[..], b"a message"] {
+        let c = sender.encrypt(b"associated data", m);
+        assert_eq!(c.len(), m.len() + 32);
+        assert!(
+            receiver
+                .clone()
+                .decrypt(b"associated data", &c[1..])
+                .is_err()
+        );
+        assert_eq!(receiver.decrypt(b"associated data", &c).unwrap(), m);
+    }
+    // Too short to hold a tag.
+    assert_eq!(receiver.decrypt(b"", &[0; 31]), Err(AuthenticationError));
 }
