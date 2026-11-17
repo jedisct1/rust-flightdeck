@@ -1,4 +1,4 @@
-//! Throughput of the deck ciphers and of authenticated encryption, for a few message sizes.
+//! Throughput of the deck ciphers, with a key and as hash functions, and of authenticated encryption, for a few message sizes.
 //!
 //! Run it with `cargo bench`, or `cargo bench -- TurboSHAKE128` to keep only some rows.
 //! For WebAssembly, with Wasmer:
@@ -51,6 +51,13 @@ fn deck<V: Variant>(name: &str, bench: &Bench) {
     row(&format!("{name}-FlightDeck output"), bench, |data| {
         deck.duplex(&tag, Trailer::EMPTY, &mut []);
         deck.xor(data);
+    });
+    row(&format!("{name}-FlightDeck hash"), bench, |data| {
+        let mut digest = [0; 64];
+        let digest = &mut digest[..2 * FlightDeck::<V>::KEY_LEN];
+        let mut hasher = FlightDeck::<V>::new(b"").unwrap();
+        hasher.duplex(data, Trailer::EMPTY, digest);
+        black_box(digest);
     });
 }
 
