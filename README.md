@@ -313,6 +313,55 @@ FlightDeck makes output twice as fast either way.
 
 And yes, on this machine the LLVM backend is the slower one, for both.
 
+## Compared with XKCP
+
+[XKCP](https://github.com/XKCP/XKCP), the code package of the Keccak team, has FlightDeck and Deck-BO too.
+
+### Apple M5 Max
+
+XKCP's `aarch64` target, with NEON code for two and four states.
+
+| MiB/s         | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| Rust, hash    |  730 |  1922 |  3524 |   4450 |  4785 |   4794 |
+| XKCP, hash    |  282 |  1698 |  2376 |   2342 |  2293 |   2254 |
+| Rust, XOF     |  729 |  3337 |  4736 |   5032 |  5039 |   5047 |
+| XKCP, XOF     |  284 |  1192 |  1982 |   2115 |  2138 |   2135 |
+| Rust, Deck-BO |  386 |  1233 |  1996 |   2344 |  2412 |   2410 |
+| XKCP, Deck-BO |  210 |   764 |  1075 |   1079 |  1070 |   1066 |
+
+This crate is 1.5 to 2.8 times as fast, except for hashing 1 KiB, where it's 13% ahead.
+
+### AMD Ryzen 7 7700, with AVX-512
+
+XKCP's `x86-64` target, which picks its AVX-512 code on this CPU.
+
+| MiB/s         | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| Rust, hash    |  492 |  1425 |  2310 |   5838 |  6247 |   6247 |
+| XKCP, hash    |  117 |   650 |   862 |   2311 |  5134 |   5534 |
+| Rust, XOF     |  504 |  2328 |  5050 |   6105 |  6180 |   6187 |
+| XKCP, XOF     |  118 |   744 |  3499 |   5498 |  5775 |   5813 |
+| Rust, Deck-BO |  271 |   887 |  1566 |   2933 |  3063 |   3066 |
+| XKCP, Deck-BO |   87 |   388 |   710 |   1630 |  2687 |   2592 |
+
+From 1 MiB on, this crate is 6 to 22% faster.
+
+### WebAssembly
+
+With the Cranelift backend:
+
+| MiB/s         | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| Rust, hash    |  581 |  1652 |  1507 |   1974 |  1983 |   1982 |
+| XKCP, hash    |  300 |  1518 |  1943 |   2053 |  2058 |   2045 |
+| Rust, XOF     |  590 |  1678 |  2005 |   2052 |  2059 |   2052 |
+| XKCP, XOF     |  301 |  1100 |  1315 |   1351 |  1351 |   1344 |
+| Rust, Deck-BO |  316 |   844 |   856 |    999 |  1005 |   1002 |
+| XKCP, Deck-BO |  279 |   732 |   807 |    822 |   821 |    818 |
+
+With Cranelift, XKCP hashes long inputs 3 to 4% faster, while this crate makes long outputs 1.5 times as fast, and encrypts long messages 1.2 times as fast.
+
 ## Running the tests
 
 ```sh
