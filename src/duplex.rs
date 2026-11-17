@@ -5,7 +5,7 @@ use core::marker::PhantomData;
 
 use crate::InvalidKeyLength;
 use crate::batch::MAX_PARALLELISM;
-use crate::keccak::{self, Lanes};
+use crate::keccak::Lanes;
 use crate::simd;
 use crate::trailer::{DuplexTrailer, append_bit};
 use crate::variant::{MAX_BLOCK_LEN, Variant};
@@ -50,6 +50,10 @@ impl<V: Variant> OverwriteDuplex<V> {
             return Err(InvalidKeyLength);
         }
         let mut duplex = Self::blank();
+        if key.is_empty() && !V::AFTER_EMPTY_KEY.is_empty() {
+            duplex.st[V::BLOCK_LANES..].copy_from_slice(V::AFTER_EMPTY_KEY);
+            return Ok(duplex);
+        }
         duplex.absorb(key, DuplexTrailer::EMPTY);
         duplex.offset = V::BLOCK_LEN;
         Ok(duplex)
@@ -82,24 +86,38 @@ impl<V: Variant> OverwriteDuplex<V> {
     /// Like [`duplex()`](Self::duplex), with nothing squeezed.
     #[inline]
     pub(crate) fn absorb(&mut self, block: &[u8], trailer: DuplexTrailer) {
+        self.overwrite(block, trailer);
+        simd::permute(&mut self.st, V::ROUNDS);
+        self.offset = 0;
+    }
+
+    /// What `absorb()` does before the permutation.
+    #[inline(always)]
+    fn overwrite(&mut self, block: &[u8], trailer: DuplexTrailer) {
         debug_assert!(block.len() <= V::BLOCK_LEN);
 
         let full = block.len() == V::BLOCK_LEN;
         let (lanes, rest) = block.as_chunks();
-        for (lane, bytes) in self.st.iter_mut().zip(lanes) {
-            *lane = u64::from_le_bytes(*bytes);
-        }
-        if !full {
+        if full {
+            // The length is a constant so that this isn't a call to `memcpy`.
+            // A call would push the vector states running next to this one out of their registers.
+            for (lane, bytes) in self.st.iter_mut().zip(&lanes[..V::BLOCK_LANES]) {
+                *lane = u64::from_le_bytes(*bytes);
+            }
+        } else {
+            for (lane, bytes) in self.st.iter_mut().zip(lanes) {
+                *lane = u64::from_le_bytes(*bytes);
+            }
             // A short block is followed by a 1 bit, then by zeros.
-            let mut last = [0; 8];
-            last[..rest.len()].copy_from_slice(rest);
-            last[rest.len()] = 0x01;
-            self.st[lanes.len()] = u64::from_le_bytes(last);
+            // Made with shifts: a lane written byte by byte is slow to read back.
+            let mut last = 1 << (8 * rest.len());
+            for (i, byte) in rest.iter().enumerate() {
+                last |= u64::from(*byte) << (8 * i);
+            }
+            self.st[lanes.len()] = last;
             self.st[lanes.len() + 1..V::BLOCK_LANES].fill(0);
         }
         self.st[V::BLOCK_LANES] ^= trailer_lane::<V>(trailer, full);
-        simd::permute(&mut self.st, V::ROUNDS);
-        self.offset = 0;
     }
 
     /// Squeeze more bytes after a call to [`duplex()`](Self::duplex).
@@ -146,7 +164,7 @@ impl<V: Variant> OverwriteDuplex<V> {
         self.offset = 0;
     }
 
-    fn output<const XOR: bool>(&mut self, data: &mut [u8]) {
+    pub(crate) fn output<const XOR: bool>(&mut self, data: &mut [u8]) {
         assert!(
             data.len() <= V::BLOCK_LEN - self.offset,
             "a duplex cipher gives at most {} bytes per call to duplex()",
@@ -247,10 +265,71 @@ impl<V: Variant, L: Lanes<N>, const N: usize> Clones<V, L, N> {
         }
     }
 
+    /// Clone `i`, as a compact clone.
+    #[inline(always)]
+    pub(crate) fn get_compact(&self, i: usize) -> OverwriteDuplex<V> {
+        let mut clone = OverwriteDuplex::blank();
+        self.put_compact(i, &mut clone);
+        clone
+    }
+
+    /// Turn `duplex` into clone `i`, as a compact clone.
+    /// Its outer part is left as it is.
+    #[inline(always)]
+    pub(crate) fn put_compact(&self, i: usize, duplex: &mut OverwriteDuplex<V>) {
+        // Indexed on purpose: with `skip()` on an iterator, the compiler keeps the states in memory on x86-64.
+        for lane in V::BLOCK_LANES..25 {
+            duplex.st[lane] = self.st[lane].to_array()[i];
+        }
+        duplex.offset = V::BLOCK_LEN;
+    }
+
     /// Make each clone absorb its own block.
     /// All the blocks have the same length.
     #[inline(always)]
     pub(crate) fn duplex(&mut self, blocks: [&[u8]; N], trailer: DuplexTrailer) {
+        self.load(blocks, trailer);
+        L::permute(&mut self.st, V::ROUNDS, 0..0);
+    }
+
+    /// Like `duplex()`, when the next thing the clones do is absorb another block.
+    /// The outer part is not computed: nothing can be squeezed.
+    #[inline(always)]
+    pub(crate) fn absorb(&mut self, blocks: [&[u8]; N], trailer: DuplexTrailer) {
+        self.load(blocks, trailer);
+        L::permute(&mut self.st, V::ROUNDS, 0..V::BLOCK_LANES);
+    }
+
+    /// Like `duplex()`, with one more clone on general registers: `one` absorbs `one_block`.
+    /// Only chaining values can be squeezed afterwards, from the clones and from `one`.
+    ///
+    /// `one` is not a field of `Clones`.
+    /// Its address goes to the assembly, and the vectors would stay in memory with it.
+    #[inline(always)]
+    pub(crate) fn absorb_with_one(
+        &mut self,
+        blocks: [&[u8]; N],
+        one: &mut OverwriteDuplex<V>,
+        one_block: &[u8],
+        trailer: DuplexTrailer,
+    ) {
+        debug_assert_eq!(blocks[0].len(), one_block.len());
+
+        // `one` goes first, while the other states are not in registers yet.
+        one.overwrite(one_block, trailer);
+        self.load(blocks, trailer);
+        L::permute_and_one(
+            &mut self.st,
+            &mut one.st,
+            V::ROUNDS,
+            V::CV_LANES..V::BLOCK_LANES,
+        );
+        one.offset = 0;
+    }
+
+    /// What `duplex()` does before the permutation.
+    #[inline(always)]
+    fn load(&mut self, blocks: [&[u8]; N], trailer: DuplexTrailer) {
         let len = blocks[0].len();
         debug_assert!(len <= V::BLOCK_LEN);
 
@@ -269,7 +348,7 @@ impl<V: Variant, L: Lanes<N>, const N: usize> Clones<V, L, N> {
             }
             self.overwrite(blocks);
         }
-        self.permute(trailer, full);
+        self.add_trailer(trailer, full);
     }
 
     /// Make clone `i` absorb the number `first + i` as a block.
@@ -281,12 +360,13 @@ impl<V: Variant, L: Lanes<N>, const N: usize> Clones<V, L, N> {
         }
         self.st[0] = L::from_array(counters);
         self.st[1..V::BLOCK_LANES].fill(L::splat(0));
-        self.permute(trailer, true);
+        self.add_trailer(trailer, true);
+        L::permute(&mut self.st, V::ROUNDS, 0..0);
     }
 
-    /// XOR `len` bytes squeezed from each clone into `data`, one clone after the other.
+    /// Write `len` bytes squeezed from each clone to `data`, one clone after the other, or XOR them into it.
     #[inline(always)]
-    pub(crate) fn xor(&self, len: usize, data: &mut [u8]) {
+    pub(crate) fn output<const XOR: bool>(&self, len: usize, data: &mut [u8]) {
         debug_assert!(len <= V::BLOCK_LEN);
 
         // Looks redundant, but WebAssembly is 9% slower without it.
@@ -301,9 +381,11 @@ impl<V: Variant, L: Lanes<N>, const N: usize> Clones<V, L, N> {
                 if size < 8 * N {
                     let mut bytes = [0; 8 * MAX_PARALLELISM];
                     row.store(&mut bytes);
-                    store::<true>(out, &bytes);
-                } else {
+                    store::<XOR>(out, &bytes);
+                } else if XOR {
                     row.xor(L::load(out)).store(out);
+                } else {
+                    row.store(out);
                 }
             }
         }
@@ -325,9 +407,8 @@ impl<V: Variant, L: Lanes<N>, const N: usize> Clones<V, L, N> {
     }
 
     #[inline(always)]
-    fn permute(&mut self, trailer: DuplexTrailer, full: bool) {
+    fn add_trailer(&mut self, trailer: DuplexTrailer, full: bool) {
         let after_block = &mut self.st[V::BLOCK_LANES];
         *after_block = after_block.xor(L::splat(trailer_lane::<V>(trailer, full)));
-        keccak::permute_lanes(&mut self.st, V::ROUNDS);
     }
 }

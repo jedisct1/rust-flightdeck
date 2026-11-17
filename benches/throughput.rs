@@ -1,6 +1,7 @@
 //! Throughput of the deck ciphers, with a key and as hash functions, and of authenticated encryption, for a few message sizes.
 //!
 //! Run it with `cargo bench`, or `cargo bench -- TurboSHAKE128` to keep only some rows.
+//! On a CPU with AVX-512, `RUSTFLAGS="--cfg flightdeck_no_avx512" cargo bench` shows what the AVX2 code does.
 //! For WebAssembly, with Wasmer:
 //!
 //! ```sh

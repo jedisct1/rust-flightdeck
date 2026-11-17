@@ -3,7 +3,9 @@
 use core::fmt;
 
 use crate::InvalidKeyLength;
-use crate::batch::{Absorb, CHAINING_VALUE_TRAILER, COUNTER_TRAILER, MAX_PARALLELISM, Output};
+use crate::batch::{
+    Absorb, AbsorbBlocks, CHAINING_VALUE_TRAILER, COUNTER_TRAILER, MAX_PARALLELISM, Output,
+};
 use crate::duplex::{OverwriteDuplex, store};
 use crate::simd;
 use crate::trailer::{DuplexTrailer, Trailer};
@@ -86,17 +88,7 @@ impl<V: Variant> FlightDeck<V> {
     ///
     /// If [`duplex()`](Self::duplex) was never called.
     pub fn squeeze(&mut self, output: &mut [u8]) {
-        // Short outputs are the common case, so what's left of the first block is written directly.
-        // The rest is zeroed and goes through `xor()`.
-        let offset = self.offset.expect(NO_OUTPUT);
-        let left = (V::BLOCK_LEN as u64).saturating_sub(offset) as usize;
-        let (head, rest) = output.split_at_mut(output.len().min(left));
-        self.duplex.squeeze(head);
-        self.offset = Some(offset + head.len() as u64);
-        if !rest.is_empty() {
-            rest.fill(0);
-            self.xor(rest);
-        }
+        self.output::<false>(output);
     }
 
     /// Like [`squeeze()`](Self::squeeze), but XOR the bytes into `data` instead of writing them there.
@@ -106,14 +98,19 @@ impl<V: Variant> FlightDeck<V> {
     /// # Panics
     ///
     /// If [`duplex()`](Self::duplex) was never called.
-    pub fn xor(&mut self, mut data: &mut [u8]) {
+    pub fn xor(&mut self, data: &mut [u8]) {
+        self.output::<true>(data);
+    }
+
+    /// Write the next bytes of the output to `data`, or XOR them into it.
+    fn output<const XOR: bool>(&mut self, mut data: &mut [u8]) {
         // The first block comes from the main duplex.
         // Block `i` comes from a clone of it that absorbs the number `i`.
         let mut offset = self.offset.expect(NO_OUTPUT);
 
         if offset < V::BLOCK_LEN as u64 {
             let (head, rest) = data.split_at_mut(data.len().min(V::BLOCK_LEN - offset as usize));
-            self.duplex.xor(head);
+            self.duplex.output::<XOR>(head);
             offset += head.len() as u64;
             data = rest;
         }
@@ -121,7 +118,7 @@ impl<V: Variant> FlightDeck<V> {
         if used != 0 && !data.is_empty() {
             let squeezer = self.squeezer.as_mut().expect("an output block was started");
             let (head, rest) = data.split_at_mut(data.len().min(V::BLOCK_LEN - used));
-            squeezer.xor(head);
+            squeezer.output::<XOR>(head);
             offset += head.len() as u64;
             data = rest;
         }
@@ -133,7 +130,7 @@ impl<V: Variant> FlightDeck<V> {
                 let squeezer = self.squeezer.get_or_insert_with(OverwriteDuplex::blank);
                 squeezer.clone_with_counter_from(&self.duplex, index, COUNTER_TRAILER);
                 let (head, rest) = data.split_at_mut(data.len().min(V::BLOCK_LEN));
-                squeezer.xor(head);
+                squeezer.output::<XOR>(head);
                 offset += head.len() as u64;
                 data = rest;
                 continue;
@@ -148,6 +145,7 @@ impl<V: Variant> FlightDeck<V> {
                         duplex: &self.duplex,
                         index,
                         data: batch,
+                        xor: XOR,
                         keep: None,
                     },
                 );
@@ -167,11 +165,12 @@ impl<V: Variant> FlightDeck<V> {
                     duplex: &self.duplex,
                     index,
                     data: &mut batch[..batch_len],
+                    xor: false,
                     keep: (!last.is_empty()).then_some((needed - 1, &mut *squeezer)),
                 },
             );
-            store::<true>(blocks, &batch);
-            squeezer.xor(last);
+            store::<XOR>(blocks, &batch);
+            squeezer.output::<XOR>(last);
             offset += (blocks.len() + last.len()) as u64;
             data = &mut [];
         }
@@ -203,8 +202,10 @@ impl<V: Variant> FlightDeck<V> {
             } else {
                 0
             };
+            let one_more = takes_one_more::<V>(n, wanted, full);
+            let done = count + usize::from(one_more);
 
-            let mut cvs = [0; MAX_PARALLELISM * MAX_BLOCK_LEN];
+            let mut cvs = [0; (MAX_PARALLELISM + 1) * MAX_BLOCK_LEN];
             let tail = simd::run(
                 n,
                 Absorb {
@@ -214,6 +215,7 @@ impl<V: Variant> FlightDeck<V> {
                     tail_len,
                     cvs: &mut cvs,
                     first: first.then_some(&mut self.duplex),
+                    one_more,
                 },
             );
             if first {
@@ -225,9 +227,9 @@ impl<V: Variant> FlightDeck<V> {
             }
             root.update(
                 &mut self.duplex,
-                &cvs[usize::from(first) * V::CV_LEN..count * V::CV_LEN],
+                &cvs[usize::from(first) * V::CV_LEN..done * V::CV_LEN],
             );
-            chunks = &chunks[count * V::CHUNK_LEN..];
+            chunks = &chunks[done * V::CHUNK_LEN..];
             if let Some(mut tail) = tail {
                 let cv = &mut cvs[..V::CV_LEN];
                 tail.duplex(&chunks[tail_len..], CHAINING_VALUE_TRAILER, cv);
@@ -268,6 +270,19 @@ fn parallelism() -> usize {
     n
 }
 
+/// Whether a batch of `n` clones takes one more chunk along, on general registers.
+///
+/// That makes the batch slower.
+/// It pays when it saves a batch for a single chunk, or leaves half a batch for the end instead of a whole one.
+fn takes_one_more<V: Variant>(n: usize, wanted: usize, full: usize) -> bool {
+    let left = wanted % n;
+    let pays = full > n && (left == 1 || left == n / 2 + 1);
+    let can = simd::runs_one_more(n, V::ROUNDS, V::CV_LANES..V::BLOCK_LANES);
+    #[cfg(test)]
+    let can = crate::tests::one_more().unwrap_or(can);
+    pays && can
+}
+
 /// How many clones to run at once when `wanted` of them have something to do.
 /// `None` when a batch isn't worth it.
 fn batch_size(wanted: usize) -> Option<usize> {
@@ -278,6 +293,11 @@ fn batch_size(wanted: usize) -> Option<usize> {
 /// Absorb the blocks of a string, except the last one.
 /// Returns what's left: at most `BLOCK_LEN` bytes.
 fn absorb_blocks<'a, V: Variant>(duplex: &mut OverwriteDuplex<V>, mut input: &'a [u8]) -> &'a [u8] {
+    if input.len() > V::BLOCK_LEN && simd::runs_one_state() {
+        let (blocks, last) = input.split_at((input.len() - 1) / V::BLOCK_LEN * V::BLOCK_LEN);
+        simd::run_one_state(AbsorbBlocks { duplex, blocks });
+        return last;
+    }
     while input.len() > V::BLOCK_LEN {
         let (block, rest) = input.split_at(V::BLOCK_LEN);
         duplex.absorb(block, DuplexTrailer::EMPTY);

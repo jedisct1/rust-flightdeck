@@ -1,5 +1,7 @@
 //! The Keccak-p[1600] permutation, on one state or on several states at once.
 
+use core::ops::Range;
+
 /// The same lane of `N` states, in one vector.
 ///
 /// All of this has to be inlined into the function that was built for these vectors.
@@ -29,9 +31,35 @@ pub(crate) trait Lanes<const N: usize>: Copy {
     /// Rotate left by `L` bits, 1 to 63.
     /// `R` is `64 - L`: some instruction sets need both as constants.
     fn rotl<const L: i32, const R: i32>(self) -> Self;
+
+    /// The permutation on `N` states, like `permute_lanes()`.
+    ///
+    /// The caller won't read the lanes in `skip`, so they can come out as anything.
+    /// A backend with faster code for the rounds puts it here.
+    #[inline(always)]
+    fn permute(st: &mut [Self; 25], rounds: usize, skip: Range<usize>) {
+        permute_lanes(st, rounds);
+        // Lets the compiler drop what the last round does for these lanes.
+        st[skip].fill(Self::splat(0));
+    }
+
+    /// Like `permute()`, with one more state on general registers.
+    ///
+    /// Here the states take turns.
+    /// A backend that runs them together puts that here, and says so with `simd::runs_one_more()`.
+    #[inline(always)]
+    fn permute_and_one(
+        st: &mut [Self; 25],
+        one: &mut [u64; 25],
+        rounds: usize,
+        skip: Range<usize>,
+    ) {
+        Self::permute(st, rounds, skip);
+        crate::simd::permute(one, rounds);
+    }
 }
 
-const ROUND_CONSTANTS: [u64; 24] = [
+pub(crate) const ROUND_CONSTANTS: [u64; 24] = [
     0x0000000000000001,
     0x0000000000008082,
     0x800000000000808a,
@@ -191,6 +219,8 @@ fn four_rounds<L: Lanes<N>, const N: usize>(
 
 /// The last `rounds` rounds of Keccak-f[1600] on `N` states: 12 or 24.
 /// `st[i]` is lane `i` of every state.
+///
+/// Call `Lanes::permute()` instead: the backend may have something faster.
 #[inline(always)]
 pub(crate) fn permute_lanes<L: Lanes<N>, const N: usize>(st: &mut [L; 25], rounds: usize) {
     debug_assert!(rounds == 12 || rounds == 24);

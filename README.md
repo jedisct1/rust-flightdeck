@@ -4,7 +4,7 @@ A Rust implementation of FlightDeck and Deck-BO for encrypting and authenticatin
 
 It's a port of the [Zig implementation](https://github.com/jedisct1/flightdeck-deckbo), with the same three layers and the same results.
 
-It works with and without `std`, doesn't allocate unless you ask for it, and its only dependency is `cpufeatures`, on x86-64, to find out what the CPU can do.
+It works with and without `std`, doesn't allocate unless you ask for it, and has only one small dependency (`cpufeatures`) to find out what the CPU can do.
 
 ## What's in there
 
@@ -244,6 +244,74 @@ Before you use it that way, know that:
   If that gets specified some day, the digests may not be the same as the ones you get here.
 - Only collisions are covered by a proof.
 - Authenticated encryption needs a secret key. Without one, anybody can decrypt.
+
+## FlightDeck is fast!
+
+Here's `TurboShake128FlightDeck` with an empty key next to [BLAKE3](https://github.com/BLAKE3-team/BLAKE3), each on a single thread, used in two ways:
+
+- as a hash function: a 32-byte digest of an input of the given size;
+- as a XOF: an output of the given size, from a 32-byte input.
+
+The numbers are MiB/s, and every call starts from scratch.
+
+### Apple M5 Max
+
+| MiB/s            | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ---------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| FlightDeck, hash |  725 |  1942 |  3614 |   4571 |  4943 |   4950 |
+| BLAKE3, hash     | 1321 |  1383 |  2502 |   2539 |  2540 |   2536 |
+| FlightDeck, XOF  |  734 |  3353 |  4851 |   5174 |  5218 |   5224 |
+| BLAKE3, XOF      | 1178 |  1466 |  1490 |   1494 |  1492 |   1492 |
+
+Past a few hundred bytes, FlightDeck hashes up to twice as fast as BLAKE3, and makes output up to 3.5 times as fast.
+
+### AMD Ryzen 7 7700, with AVX-512
+
+| MiB/s            | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ---------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| FlightDeck, hash |  504 |  1431 |  2308 |   5855 |  6274 |   6243 |
+| BLAKE3, hash     | 1051 |   936 |  4976 |   6325 |  6358 |   6305 |
+| FlightDeck, XOF  |  494 |  2257 |  4986 |   6084 |  6187 |   6173 |
+| BLAKE3, XOF      |  796 |  5606 |  6675 |   6745 |  6726 |   6720 |
+
+### AMD Ryzen 7 7700, with AVX2 only
+
+| MiB/s            | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ---------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| FlightDeck, hash |  357 |   924 |  1145 |   2879 |  3271 |   3273 |
+| BLAKE3, hash     |  969 |   896 |  4137 |   4383 |  4379 |   4336 |
+| FlightDeck, XOF  |  363 |  1254 |  2845 |   3091 |  3085 |   3071 |
+| BLAKE3, XOF      |  708 |   993 |  1020 |   1020 |  1019 |   1018 |
+
+### WebAssembly
+
+Same M5 Max, with [Wasmer](https://wasmer.io), and `simd128` turned on for both.
+
+With the LLVM backend:
+
+| MiB/s            | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ---------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| FlightDeck, hash |  650 |  1794 |  1000 |   1312 |  1280 |   1279 |
+| BLAKE3, hash     |  621 |   377 |  1221 |   1274 |  1281 |   1277 |
+| FlightDeck, XOF  |  648 |  1182 |  1276 |   1279 |  1282 |   1272 |
+| BLAKE3, XOF      |  349 |   618 |   631 |    638 |   639 |    638 |
+
+With the Cranelift backend:
+
+| MiB/s            | 64 B | 1 KiB | 8 KiB | 64 KiB | 1 MiB | 16 MiB |
+| ---------------- | ---: | ----: | ----: | -----: | ----: | -----: |
+| FlightDeck, hash |  594 |  1683 |  1545 |   2020 |  2003 |   2011 |
+| BLAKE3, hash     | 1038 |   708 |  2294 |   2349 |  2313 |   2352 |
+| FlightDeck, XOF  |  588 |  1714 |  2040 |   2079 |  2068 |   2085 |
+| BLAKE3, XOF      |  618 |  1070 |  1101 |   1103 |  1090 |   1109 |
+
+WebAssembly vectors are 128 bits wide and can't rotate, so they don't do much for Keccak.
+
+Hashing long inputs is a tie with LLVM, and BLAKE3 is 15% faster with Cranelift.
+
+FlightDeck makes output twice as fast either way.
+
+And yes, on this machine the LLVM backend is the slower one, for both.
 
 ## Running the tests
 

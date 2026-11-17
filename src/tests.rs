@@ -10,6 +10,13 @@ use crate::*;
 std::thread_local! {
     static MAX_PARALLELISM: Cell<usize> = const { Cell::new(usize::MAX) };
     static MAX_TIER: Cell<usize> = const { Cell::new(usize::MAX) };
+    static ONE_MORE: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+/// Whether the current test wants batches to take one more clone along, on general registers.
+/// `None` leaves it to the CPU.
+pub(crate) fn one_more() -> Option<bool> {
+    ONE_MORE.get()
 }
 
 /// The most states the current test wants processed at once.
@@ -23,13 +30,25 @@ pub(crate) fn max_tier() -> usize {
     MAX_TIER.get()
 }
 
-/// Every instruction set with every batch size, as (tier, states).
+/// Every instruction set with every batch size, as (tier, states, one more clone).
 /// What the CPU doesn't have falls back to the best it has, and 8 states means as many as the tier can do.
-const SETUPS: [(usize, usize); 7] = [(0, 1), (0, 8), (1, 2), (1, 8), (2, 2), (2, 4), (2, 8)];
+/// The extra clone is tried where the states take turns, and where it has assembly.
+const SETUPS: [(usize, usize, bool); 9] = [
+    (0, 1, false),
+    (0, 8, false),
+    (0, 8, true),
+    (1, 2, false),
+    (1, 8, false),
+    (2, 2, false),
+    (2, 4, false),
+    (2, 8, false),
+    (2, 8, true),
+];
 
-fn set_up((tier, width): (usize, usize)) {
+fn set_up((tier, width, one_more): (usize, usize, bool)) {
     MAX_TIER.set(tier);
     MAX_PARALLELISM.set(width);
+    ONE_MORE.set(Some(one_more));
 }
 
 /// The inputs of the test vectors.
@@ -62,12 +81,12 @@ fn sponge(rate: usize, rounds: usize, message: &[u8]) -> [u8; 200] {
     state
 }
 
-fn duplex_against_sponge<V: Variant>() {
+fn duplex_against_sponge<V: Variant>(key_len: usize) {
     let rho = V::BLOCK_LEN;
     // Block length, trailer, and that trailer once the duplex has appended its bit (1 for a full block).
     // The first call is the one that absorbs the key.
     let calls = [
-        (5, 0b1, 0b10),
+        (key_len, 0b1, 0b10),
         (0, 0b1, 0b10),
         (rho, 0b111111, 0b1111111),
         (1, 0b10, 0b100),
@@ -127,10 +146,13 @@ fn duplex_against_shake_and_turboshake() {
         hex("1e415f1c5983aff2169217277d17bb538cd945a397ddec541f1ce41af2c1b74c")
     );
 
-    duplex_against_sponge::<Shake128>();
-    duplex_against_sponge::<Shake256>();
-    duplex_against_sponge::<TurboShake128>();
-    duplex_against_sponge::<TurboShake256>();
+    // An empty key is not absorbed: its result is a constant.
+    for key_len in [0, 5] {
+        duplex_against_sponge::<Shake128>(key_len);
+        duplex_against_sponge::<Shake256>(key_len);
+        duplex_against_sponge::<TurboShake128>(key_len);
+        duplex_against_sponge::<TurboShake256>(key_len);
+    }
 }
 
 /// The message of the panic that `f` ends with.
