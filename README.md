@@ -362,23 +362,7 @@ With the Cranelift backend:
 
 With Cranelift, XKCP hashes long inputs 3 to 4% faster, while this crate makes long outputs 1.5 times as fast, and encrypts long messages 1.2 times as fast.
 
-## Running the tests
-
-```sh
-cargo test     # run the tests
-cargo bench    # measure the throughput
-```
-
-To run them for WebAssembly, with [Wasmer](https://wasmer.io):
-
-```sh
-export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmer run --"
-export RUSTFLAGS="-C target-feature=+simd128"
-cargo test --target wasm32-wasip1
-cargo bench --target wasm32-wasip1
-```
-
-## Papers
+## References
 
 FlightDeck comes from ["Parallelizable modes for duplex-based authenticated encryption"](https://eprint.iacr.org/2026/2801) by Joan Daemen, Silvia Mella and Gilles Van Assche.
 
