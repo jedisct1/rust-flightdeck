@@ -210,6 +210,41 @@ let mut sending = TurboShake128Bo::<16>::new(client_to_server)?;
 let mut receiving = TurboShake128Bo::<16>::new(server_to_client)?;
 ```
 
+## Hashing
+
+A deck cipher doesn't need a secret key.
+With an empty key, it's a hash function:
+
+```rust
+use flightdeck::{Trailer, TurboShake128FlightDeck};
+
+let mut hasher = TurboShake128FlightDeck::new(b"")?;
+
+let mut digest = [0; 32];
+hasher.duplex(message, Trailer::EMPTY, &mut digest);
+
+// A longer digest? Keep squeezing.
+let mut more = [0; 32];
+hasher.squeeze(&mut more);
+```
+
+Each call to `duplex()` adds a string, and the digest covers all of them, in order.
+There's no way to mix up `"ab"` then `"c"` with `"a"` then `"bc"`, so you can hash a list of fields without length prefixes.
+
+Ask for at least 32 bytes with the 128-bit instances, and 64 bytes with the 256-bit ones.
+Finding two inputs with the same digest is then as hard as it is with SHAKE or TurboSHAKE: both papers prove it, even when the key is public.
+
+A public string works as a key too.
+Using the name of your application, for instance, keeps its digests apart from everybody else's.
+
+Before you use it that way, know that:
+
+- It's not a standard hash function. The digests don't match TurboSHAKE, KangarooTwelve or anything else, so use those if other software has to compute them.
+- The FlightDeck paper mentions hashing without a key as future work.
+  If that gets specified some day, the digests may not be the same as the ones you get here.
+- Only collisions are covered by a proof.
+- Authenticated encryption needs a secret key. Without one, anybody can decrypt.
+
 ## Running the tests
 
 ```sh
