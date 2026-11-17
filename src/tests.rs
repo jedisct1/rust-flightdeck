@@ -168,6 +168,8 @@ fn misuse_panics() {
     let deck = || TurboShake128FlightDeck::new(b"key").unwrap();
     assert!(panic_message(move || deck().squeeze(&mut [0])).contains("before squeezing"));
     assert!(panic_message(move || deck().xor(&mut [0])).contains("before squeezing"));
+    let session = || TurboShake128Bo::<16>::new(b"key").unwrap();
+    assert!(panic_message(move || session().squeeze(&mut [0])).contains("before squeezing"));
 }
 
 #[test]
@@ -515,6 +517,41 @@ fn bo_authentication_failure() {
         }
     }
     receiver.decrypt_in_place(ad, &mut [], &tag).unwrap();
+}
+
+#[test]
+fn bo_absorb_and_squeeze() {
+    let mut sender = TurboShake128Bo::<16>::new(b"key").unwrap();
+    let mut receiver = sender.clone();
+
+    // The squeezed bytes are the end of the tag a session with longer tags gives.
+    let mut long_tags = TurboShake128Bo::<48>::new(b"key").unwrap();
+    let long_tag = long_tags.encrypt_in_place(b"data", &mut []);
+    sender.absorb(b"data");
+    let mut squeezed = [0; 32];
+    sender.squeeze(&mut squeezed[..5]);
+    sender.squeeze(&mut squeezed[5..]);
+    assert_eq!(squeezed, long_tag[16..]);
+
+    // An absorb is an empty message, so the other side can check it.
+    let tag = long_tag.first_chunk().unwrap();
+    receiver.decrypt_in_place(b"data", &mut [], tag).unwrap();
+
+    // Only the sender squeezed, and the next message still decrypts.
+    // Both sides then squeeze the same bytes, and a message that's rejected doesn't change them.
+    let mut c = *b"a message";
+    let tag = sender.encrypt_in_place(b"", &mut c);
+    receiver.decrypt_in_place(b"", &mut c, &tag).unwrap();
+    let mut expected = [0; 400];
+    sender.squeeze(&mut expected);
+    let long_tag = long_tags.encrypt_in_place(b"", &mut b"a message".clone());
+    assert_eq!(expected[..32], long_tag[16..]);
+
+    let mut output = [0; 400];
+    receiver.squeeze(&mut output[..170]);
+    assert!(receiver.decrypt_in_place(b"", &mut c, &tag).is_err());
+    receiver.squeeze(&mut output[170..]);
+    assert_eq!(output, expected);
 }
 
 #[cfg(feature = "alloc")]

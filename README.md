@@ -130,6 +130,86 @@ There's also `clone_compact()`, which gives you a clone that can only be used to
 One thing to remember: call `duplex()` before `squeeze()` or `xor()`.
 There's nothing to squeeze before that, and they panic.
 
+## Sessions
+
+A session is a value like any other.
+`new()` starts it, everything you encrypt, decrypt or absorb moves it forward, and you keep it around for as long as the conversation lasts, one on each side.
+
+Encrypting a message and decrypting it leave a session in the same state.
+So a single session can carry both directions, as long as the two sides take turns:
+
+```rust
+let mut alice = TurboShake128Bo::<16>::new(&key)?;
+let mut bob = TurboShake128Bo::<16>::new(&key)?;
+
+let ciphertext = alice.encrypt(b"", b"ping");
+assert_eq!(bob.decrypt(b"", &ciphertext)?, b"ping");
+
+let ciphertext = bob.encrypt(b"", b"pong");
+assert_eq!(alice.decrypt(b"", &ciphertext)?, b"pong");
+```
+
+If both sides can send whenever they want, their messages can cross and the two sessions stop matching.
+In that case, use two sessions, one for each direction, each with its own key. There's an example below.
+
+`absorb()` mixes something into a session without sending a ciphertext: a session identifier, a nonce, the transcript of a handshake.
+Both sides have to absorb the same thing at the same point.
+
+`squeeze()` gives you bytes that depend on the key and on everything that happened in the session so far.
+Both sides get the same ones, so that's how you make new keys out of a session.
+
+```rust
+alice.absorb(b"session 1234");
+bob.absorb(b"session 1234");
+
+let mut alice_key = [0; 32];
+let mut bob_key = [0; 32];
+alice.squeeze(&mut alice_key);
+bob.squeeze(&mut bob_key);
+assert_eq!(alice_key, bob_key);
+```
+
+All of this happens on the same state, in any order you like: encrypt, decrypt, absorb, squeeze.
+The only rule is that the two sides go through the same messages and the same `absorb()` calls, in the same order.
+
+Squeezing is not part of that, because it doesn't move the session: what comes next is the same whether you squeezed or not.
+Squeeze again and you get the bytes that follow, not the same ones, until the next message or `absorb()`.
+There has to be something in the session first: `squeeze()` panics on a brand new one.
+
+An `absorb()` is just a message with an empty buffer, whose tag is thrown away.
+If you'd rather have the other side check what it absorbed, send that tag instead:
+
+```rust
+let tag = alice.encrypt_in_place(b"session 1234", &mut []);
+bob.decrypt_in_place(b"session 1234", &mut [], &tag)?;
+```
+
+What you squeeze comes after the tag of the last message, and never includes it.
+So tags can travel in the clear and squeezed bytes can stay secret.
+
+A few more things to know:
+
+- A message that doesn't authenticate doesn't move the session.
+  So a forged or damaged one does no harm: the real one still decrypts after it.
+- A message that gets lost or comes out of order is another story: what was sent after it doesn't decrypt until it shows up.
+  So sessions need a transport that delivers everything, in order.
+- `clone()` copies a session, to save it or to try something on the side.
+- Messages and `absorb()` are Deck-BO as the paper specifies it.
+  `squeeze()` is an addition, so don't expect it from other implementations.
+
+Back to the two directions that don't take turns.
+Squeeze two keys from a session both sides share, and start one session for each direction.
+Here's the client. The server does the same thing with the two keys swapped:
+
+```rust
+let mut keys = [0; 32];
+handshake.squeeze(&mut keys);
+
+let (client_to_server, server_to_client) = keys.split_at(16);
+let mut sending = TurboShake128Bo::<16>::new(client_to_server)?;
+let mut receiving = TurboShake128Bo::<16>::new(server_to_client)?;
+```
+
 ## Running the tests
 
 ```sh

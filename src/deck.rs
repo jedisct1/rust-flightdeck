@@ -258,7 +258,7 @@ impl<V: Variant> fmt::Debug for FlightDeck<V> {
     }
 }
 
-const NO_OUTPUT: &str = "duplex() must be called before squeezing";
+const NO_OUTPUT: &str = "something must be absorbed before squeezing";
 
 /// How many clones can be processed at once.
 fn parallelism() -> usize {

@@ -21,6 +21,14 @@ const MESSAGE_TRAILER: Trailer = Trailer(0b1110);
 /// It gets a tag of `TAG_LEN` bytes, that covers the whole session up to that message.
 /// So messages have to be decrypted in the order they were encrypted.
 ///
+/// The session is this value: keep one on each side, and call it for every message.
+/// Encrypting a message and decrypting it leave it in the same state,
+/// so one session can carry both directions when the two sides take turns.
+/// When they don't, use one session for each direction, each with its own key.
+///
+/// Between messages, [`absorb()`](Self::absorb) mixes data into the session,
+/// and [`squeeze()`](Self::squeeze) gets bytes out of it, to make new keys for instance.
+///
 /// There's no nonce.
 /// Encrypt the same message at the same point of two sessions with the same key, and you get the same ciphertext.
 /// Besides the length of the message, that's all a ciphertext gives away.
@@ -41,6 +49,22 @@ const MESSAGE_TRAILER: Trailer = Trailer(0b1110);
 /// let tag = sender.encrypt_in_place(b"associated data", &mut buffer);
 /// receiver.decrypt_in_place(b"associated data", &mut buffer, &tag)?;
 /// assert_eq!(&buffer, b"hello");
+///
+/// // The answer goes through the same session.
+/// let mut buffer = *b"hi";
+/// let tag = receiver.encrypt_in_place(b"", &mut buffer);
+/// sender.decrypt_in_place(b"", &mut buffer, &tag)?;
+/// assert_eq!(&buffer, b"hi");
+///
+/// // Mix in something both sides know, and get the same 32 bytes on each side.
+/// sender.absorb(b"session 1234");
+/// receiver.absorb(b"session 1234");
+///
+/// let mut sender_key = [0; 32];
+/// let mut receiver_key = [0; 32];
+/// sender.squeeze(&mut sender_key);
+/// receiver.squeeze(&mut receiver_key);
+/// assert_eq!(sender_key, receiver_key);
 /// # Ok::<(), Box<dyn core::error::Error>>(())
 /// ```
 #[derive(Clone)]
@@ -91,7 +115,7 @@ impl<V: Variant, const TAG_LEN: usize> DeckBo<V, TAG_LEN> {
         buffer: &mut [u8],
         tag: &[u8; TAG_LEN],
     ) -> Result<(), AuthenticationError> {
-        let saved = self.deck.clone_compact();
+        let saved = self.deck.clone();
         let deck = &mut self.deck;
         let mut computed_tag = [0; TAG_LEN];
         if buffer.is_empty() {
@@ -111,6 +135,32 @@ impl<V: Variant, const TAG_LEN: usize> DeckBo<V, TAG_LEN> {
             return Err(AuthenticationError);
         }
         Ok(())
+    }
+
+    /// Mix `data` into the session, without sending anything.
+    ///
+    /// Both sides have to absorb the same data at the same point of the session.
+    ///
+    /// It's a message with nothing to encrypt, whose tag is thrown away.
+    /// To let the other side check the data, send it the tag of
+    /// [`encrypt_in_place(data, &mut [])`](Self::encrypt_in_place) instead.
+    pub fn absorb(&mut self, data: &[u8]) {
+        let _ = self.encrypt_in_place(data, &mut []);
+    }
+
+    /// Get bytes that depend on the key and on everything that happened in the session so far.
+    ///
+    /// Both sides get the same ones, so that's how to make new keys out of a session.
+    ///
+    /// These bytes come after the tag of the last message, and never include it.
+    /// Squeezing doesn't move the session: what comes next is the same whether you squeezed or not.
+    /// Squeezing again continues where the last call stopped, until the next message or [`absorb()`](Self::absorb).
+    ///
+    /// # Panics
+    ///
+    /// If nothing happened in the session yet.
+    pub fn squeeze(&mut self, output: &mut [u8]) {
+        self.deck.squeeze(output);
     }
 
     /// Encrypt the next message of the session, and return the ciphertext followed by the tag.
