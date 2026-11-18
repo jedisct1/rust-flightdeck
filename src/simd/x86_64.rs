@@ -239,7 +239,7 @@ lanes!(
 );
 
 /// Runs assembly on the 25 vectors of `$st`: lane `i` is in register `i`, and `rax` points to the round constants.
-/// The seven registers left are scratch. `$width` is `zmm`, `ymm` or `xmm`.
+/// The seven vector registers left and `rcx` are scratch. `$width` is `zmm`, `ymm` or `xmm`.
 macro_rules! in_registers {
     (zmm, $($rest:tt)*) => {
         in_registers!(
@@ -299,6 +299,7 @@ macro_rules! in_registers {
             asm!(
                 $($template)*,
                 in("rax") $constants.as_ptr(),
+                out("rcx") _,
                 inout($r0) s0, inout($r1) s1, inout($r2) s2, inout($r3) s3, inout($r4) s4,
                 inout($r5) s5, inout($r6) s6, inout($r7) s7, inout($r8) s8, inout($r9) s9,
                 inout($r10) s10, inout($r11) s11, inout($r12) s12, inout($r13) s13,
@@ -328,7 +329,7 @@ macro_rules! twelve_rounds_x8 {
                 st: Avx512,
                 constants,
                 asm(include_str!($file)),
-                options(pure, readonly, nostack, preserves_flags)
+                options(pure, readonly, nostack)
             );
         }
     };
@@ -391,7 +392,7 @@ fn twelve_rounds_x9(st: &mut [Avx512; 25], one: &mut [u64; 25], constants: &[u64
             rounds = sym twelve_rounds_nine,
             in("rdi") one.as_mut_ptr(),
             in("rsi") scratch.as_mut_ptr(),
-            out("rcx") _, out("rdx") _, out("r8") _, out("r9") _, out("r10") _,
+            out("rdx") _, out("r8") _, out("r9") _, out("r10") _,
             out("r11") _, out("r12") _, out("r13") _, out("r14") _, out("r15") _
         ),
         options()
@@ -452,7 +453,7 @@ macro_rules! permute_with_routine {
                 st: $lanes,
                 constants,
                 asm("call {rounds}", rounds = sym $routine),
-                options(pure, readonly, preserves_flags)
+                options(pure, readonly)
             );
         }
 
@@ -489,7 +490,7 @@ macro_rules! permute_in_ymm {
                 wide: Avx512x4,
                 constants,
                 asm("call {rounds}", rounds = sym twelve_rounds_ymm),
-                options(pure, readonly, preserves_flags)
+                options(pure, readonly)
             );
             *st = lanes.map(|lanes| $lanes(_mm256_castsi256_si128(lanes.0)));
         }

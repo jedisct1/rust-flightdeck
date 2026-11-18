@@ -10,9 +10,10 @@ But on the CPUs measured, speed depends on things it decides for other reasons:
   Rotations only run on half of the vector units, so the rest has to be laid out around them.
 - Which input `vpternlogq` overwrites.
   It should be the one computed last, or AMD CPUs wait for it.
-- Where the code is, and how many copies of it there are.
+- Where the code is, and how much of it there is.
   In 128-bit and 256-bit registers the rounds are so fast that the CPU struggles to fetch the instructions.
-  So every file starts on a 64-byte boundary, and these widths have one file each.
+  Twelve rounds written out leave no room in the cache of decoded instructions for another routine taking turns with them.
+  So the rounds for up to eight states run in a loop, one file serves one, two and four states, and every file starts on a 64-byte boundary.
 
 With AVX-512 a state fits in registers, 25 of the 32, for eight, four or two states at once.
 The rounds are a list of operations on named values, and registers are picked afterwards.
@@ -121,20 +122,20 @@ def round_by_rows(r):
     return ops + parities(r + 1)
 
 
-def program(round_fn, lanes, order=None, overwrite={}):
-    """Twelve rounds, without what the wanted `lanes` of the result don't need.
+def program(round_fn, lanes, order=None, overwrite={}, rounds=12):
+    """`rounds` rounds, without what the wanted `lanes` of the result don't need.
 
     Each operation gets a fifth field: the input its `vpternlogq` overwrites, if `overwrite` says so.
     A mark follows each round.
     """
     ops = [op + (None,) for op in parities(0)]
-    for r in range(12):
+    for r in range(rounds):
         plain = round_fn(r)
         ops += [plain[i] + (overwrite.get(i),) for i in order or range(len(plain))]
         ops.append(("mark", None, [], None, None))
 
     # Go backwards and keep what leads to a wanted lane.
-    wanted = {f"a12_{lane}" for lane in lanes}
+    wanted = {f"a{rounds}_{lane}" for lane in lanes}
     kept = []
     for op in reversed(ops):
         if op[1] in wanted or op[0] == "mark":
@@ -152,17 +153,19 @@ def ternlog_immediate(function, operands):
     return immediate
 
 
-def assemble(ops, lanes):
+def assemble(ops, lanes, constants="rax", first_round=0):
     """Pick registers and return the instructions, for eight states.
 
     The lanes come in zmm0 to zmm24, and the wanted `lanes` of the result leave in the same registers.
+    The round constants are read at `constants`, starting with the one of round `first_round`.
     A mark comes out as a line of its own, "mark".
     """
     uses = {}
     for _, _, inputs, _, _ in ops:
         for value in inputs:
             uses[value] = uses.get(value, 0) + 1
-    leaving = {f"a12_{lane}": lane for lane in lanes}
+    rounds = sum(op[0] == "mark" for op in ops)
+    leaving = {f"a{rounds}_{lane}": lane for lane in lanes}
     for value in leaving:
         uses[value] = uses.get(value, 0) + 1
 
@@ -208,7 +211,7 @@ def assemble(ops, lanes):
             elif kind == "xor":
                 lines.append(f"vpxorq zmm{out}, zmm{register[inputs[0]]}, zmm{register[inputs[1]]}")
             else:
-                lines.append(f"vpxorq zmm{out}, zmm{register[inputs[0]]}, qword ptr [rax + {8 * argument}]{{{{1to8}}}}")
+                lines.append(f"vpxorq zmm{out}, zmm{register[inputs[0]]}, qword ptr [{constants} + {8 * (first_round + argument)}]{{{{1to8}}}}")
 
         reused = dying[0] if dying else None
         for value in inputs:
@@ -295,6 +298,20 @@ def nine(lanes):
     return lines + vector + ["pop rbx"]
 
 
+# Rounds per pass in the loops.
+# Two and three measured the same, four and six were slower.
+PER_PASS = 2
+
+
+def looped(round_fn, lanes, order=None, overwrite={}):
+    """Twelve rounds, `PER_PASS` at a time in a loop counted by rcx, and the last ones written out for the wanted `lanes` only."""
+    last = 12 - PER_PASS
+    body = assemble(program(round_fn, range(25), order, overwrite, PER_PASS), range(25), constants="rax + rcx * 8")
+    tail = assemble(program(round_fn, lanes, order, overwrite, PER_PASS), lanes, first_round=last)
+    lines = ["xor ecx, ecx", "2:"] + body + [f"add ecx, {PER_PASS}", f"cmp ecx, {last}", "jb 2b"] + tail
+    return [line for line in lines if line != "mark"]
+
+
 def avx2():
     """Twelve rounds on four states with AVX2.
 
@@ -352,7 +369,7 @@ VECTORS = """\
 // Twelve rounds of Keccak-p[1600] on {states}, for AVX-512.
 //
 // Lane i of every state is in {reg}<i>, on the way in and on the way out.
-// {reg}25 to {reg}31 are overwritten, and rax points to the twelve round constants.
+// {reg}25 to {reg}31, rcx and the flags are overwritten, and rax points to the twelve round constants.
 """
 
 SKIP = """\
@@ -407,15 +424,14 @@ def main():
 
     # Eight states also have files without the first 16 or 20 lanes, for callers that overwrite them anyway.
     for skip in (0, 16, 20):
-        lanes = range(skip, 25)
-        lines = [line for line in assemble(program(plain_round, lanes, ORDER_X8, OVERWRITE_X8), lanes) if line != "mark"]
+        lines = looped(plain_round, range(skip, 25), ORDER_X8, OVERWRITE_X8)
         header = VECTORS.format(states="eight states", reg="zmm") + (SKIP.format(skip=skip) if skip else "")
         write(f"keccak_avx512_x8_skip{skip}.s" if skip else "keccak_avx512_x8.s", header, lines)
 
     # Four states get the rounds with the fewest instructions, which is what counts there.
     # One and two states go through the same code, in the low part of the registers:
     # a ymm instruction costs what an xmm one does, and a second copy of the rounds would take turns with this one.
-    lines = [line for line in assemble(program(round_by_rows, range(25)), range(25)) if line != "mark"]
+    lines = looped(round_by_rows, range(25))
     narrow = [line.replace("zmm", "ymm").replace("1to8", "1to4") for line in lines]
     write("keccak_avx512_x4.s", VECTORS.format(states="four states", reg="ymm"), narrow)
 
