@@ -10,12 +10,12 @@ use core::arch::asm;
 use core::arch::x86_64::{
     __m128i, __m256i, __m512i, _mm_andnot_si128, _mm_loadl_epi64, _mm_loadu_si128, _mm_or_si128,
     _mm_rol_epi64, _mm_slli_epi64, _mm_srli_epi64, _mm_storel_epi64, _mm_storeu_si128,
-    _mm_unpackhi_epi64, _mm_unpacklo_epi64, _mm_xor_si128, _mm256_andnot_si256, _mm256_loadu_si256,
-    _mm256_or_si256, _mm256_permute2x128_si256, _mm256_rol_epi64, _mm256_slli_epi64,
-    _mm256_srli_epi64, _mm256_storeu_si256, _mm256_unpackhi_epi64, _mm256_unpacklo_epi64,
-    _mm256_xor_si256, _mm512_andnot_si512, _mm512_loadu_si512, _mm512_rol_epi64,
-    _mm512_shuffle_i64x2, _mm512_storeu_si512, _mm512_unpackhi_epi64, _mm512_unpacklo_epi64,
-    _mm512_xor_si512,
+    _mm_unpackhi_epi64, _mm_unpacklo_epi64, _mm_xor_si128, _mm256_andnot_si256,
+    _mm256_castsi128_si256, _mm256_castsi256_si128, _mm256_loadu_si256, _mm256_or_si256,
+    _mm256_permute2x128_si256, _mm256_rol_epi64, _mm256_slli_epi64, _mm256_srli_epi64,
+    _mm256_storeu_si256, _mm256_unpackhi_epi64, _mm256_unpacklo_epi64, _mm256_xor_si256,
+    _mm512_andnot_si512, _mm512_loadu_si512, _mm512_rol_epi64, _mm512_shuffle_i64x2,
+    _mm512_storeu_si512, _mm512_unpackhi_epi64, _mm512_unpacklo_epi64, _mm512_xor_si512,
 };
 use core::mem::MaybeUninit;
 use core::ops::Range;
@@ -200,7 +200,7 @@ lanes!(
 );
 
 lanes!(
-    /// One state, in the low half of the registers: it goes through the rounds for two.
+    /// One state, in the low part of the registers: it goes through the rounds for four.
     Avx512x1: 1 lanes in __m128i,
     unroll: true,
     load: _mm_loadl_epi64,
@@ -430,18 +430,12 @@ unsafe fn permute_x8_and_one(
     }
 }
 
-/// Twelve rounds on two states, lane `i` in `xmm<i>` and the round constants at `rax`.
+/// Twelve rounds on four states, lane `i` in `ymm<i>` and the round constants at `rax`.
 /// This is a routine for assembly to call, not a Rust function.
 ///
-/// Every caller shares this one copy, and nothing is skipped.
+/// One, two and four states all share this one copy, and nothing is skipped.
 /// In these registers the rounds are so fast that the CPU struggles to fetch the instructions,
 /// and a second copy taking turns with the first one makes that a lot worse.
-#[unsafe(naked)]
-unsafe extern "C" fn twelve_rounds_xmm() {
-    core::arch::naked_asm!(include_str!("keccak_avx512_x2.s"), "ret")
-}
-
-/// Like `twelve_rounds_xmm()`, on four states in `ymm` registers.
 #[unsafe(naked)]
 unsafe extern "C" fn twelve_rounds_ymm() {
     core::arch::naked_asm!(include_str!("keccak_avx512_x4.s"), "ret")
@@ -477,9 +471,47 @@ macro_rules! permute_with_routine {
     };
 }
 
+/// Like `permute_with_routine!`, for lanes in `xmm` registers that go through the rounds for four states.
+///
+/// A `ymm` instruction costs what an `xmm` one does on the CPUs measured.
+/// One copy of the rounds for one, two and four states stays in the cache of decoded instructions,
+/// where two copies taking turns, the output of a deck right after a duplex call for instance, could slow down by half.
+macro_rules! permute_in_ymm {
+    ($permute:ident, $twelve:ident: $lanes:ident) => {
+        #[target_feature(enable = "avx512f,avx512vl")]
+        #[inline]
+        fn $twelve(st: &mut [$lanes; 25], constants: &[u64; 12]) {
+            // The upper halves are whatever was there: lanes don't mix in the rounds.
+            let mut lanes = st.map(|lanes| Avx512x4(_mm256_castsi128_si256(lanes.0)));
+            let wide = &mut lanes;
+            in_registers!(
+                ymm,
+                wide: Avx512x4,
+                constants,
+                asm("call {rounds}", rounds = sym twelve_rounds_ymm),
+                options(pure, readonly, preserves_flags)
+            );
+            *st = lanes.map(|lanes| $lanes(_mm256_castsi256_si128(lanes.0)));
+        }
+
+        /// # Safety
+        ///
+        /// The CPU has AVX-512F and AVX-512VL.
+        #[inline(always)]
+        unsafe fn $permute(st: &mut [$lanes; 25], rounds: usize, _skip: Range<usize>) {
+            debug_assert!(rounds == 12 || rounds == 24);
+
+            for constants in keccak::ROUND_CONSTANTS[24 - rounds..].as_chunks::<12>().0 {
+                // SAFETY: the caller checked.
+                unsafe { $twelve(st, constants) };
+            }
+        }
+    };
+}
+
 permute_with_routine!(permute_x4, twelve_rounds_x4: Avx512x4 in ymm, twelve_rounds_ymm);
-permute_with_routine!(permute_x2, twelve_rounds_x2: Avx512x2 in xmm, twelve_rounds_xmm);
-permute_with_routine!(permute_x1, twelve_rounds_x1: Avx512x1 in xmm, twelve_rounds_xmm);
+permute_in_ymm!(permute_x2, twelve_rounds_x2: Avx512x2);
+permute_in_ymm!(permute_x1, twelve_rounds_x1: Avx512x1);
 
 /// What the AVX2 rounds read: the byte shuffles that rotate lanes by 8 and by 56 bits,
 /// then twelve round constants, four times each.

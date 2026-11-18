@@ -412,13 +412,12 @@ def main():
         header = VECTORS.format(states="eight states", reg="zmm") + (SKIP.format(skip=skip) if skip else "")
         write(f"keccak_avx512_x8_skip{skip}.s" if skip else "keccak_avx512_x8.s", header, lines)
 
-    # Four and two states are the same code, in the low part of the registers.
-    # They get the rounds with the fewest instructions, which is what counts there.
-    # A single state goes through the code for two.
+    # Four states get the rounds with the fewest instructions, which is what counts there.
+    # One and two states go through the same code, in the low part of the registers:
+    # a ymm instruction costs what an xmm one does, and a second copy of the rounds would take turns with this one.
     lines = [line for line in assemble(program(round_by_rows, range(25)), range(25)) if line != "mark"]
-    for name, reg, broadcast, states in [("x4", "ymm", "1to4", "four states"), ("x2", "xmm", "1to2", "two states")]:
-        narrow = [line.replace("zmm", reg).replace("1to8", broadcast) for line in lines]
-        write(f"keccak_avx512_{name}.s", VECTORS.format(states=states, reg=reg), narrow)
+    narrow = [line.replace("zmm", "ymm").replace("1to8", "1to4") for line in lines]
+    write("keccak_avx512_x4.s", VECTORS.format(states="four states", reg="ymm"), narrow)
 
     write("keccak_avx2_x4.s", AVX2, avx2())
 
