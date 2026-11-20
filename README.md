@@ -2,7 +2,8 @@
 
 A Rust implementation of FlightDeck and Deck-BO for encrypting and authenticating data.
 
-It's a port of the [Zig implementation](https://github.com/jedisct1/flightdeck-deckbo), with the same three layers and the same results.
+It's a port of the [Zig implementation](https://github.com/jedisct1/zig-flightdeck), with the same three layers and the same results.
+There's also a [C version](https://github.com/jedisct1/c-flightdeck), ported from the same Zig code.
 
 It works with and without `std`, doesn't allocate unless you ask for it, and has only one small dependency (`cpufeatures`) to find out what the CPU can do.
 
